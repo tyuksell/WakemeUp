@@ -1,0 +1,15 @@
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Python/Django
+**/__pycache__/
+**/*.pyc
+backend/venv/
+backend/db.sqlite3
+
+# Logs
+*.log
