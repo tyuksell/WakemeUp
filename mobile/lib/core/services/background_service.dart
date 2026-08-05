@@ -11,8 +11,8 @@ import '../utils/distance_calculator.dart';
 
 @pragma('vm:entry-point')
 class MyBackgroundService {
-  // Production setting: Replace with your public server IP or domain when testing on a real device
-  static const String serverBaseUrl = 'https://coveting-finless-cosmetics.ngrok-free.dev'; // Ngrok public URL
+  // Production URL — Render deployment
+  static const String serverBaseUrl = 'https://wakemeup-backend.onrender.com';
 
   // In-memory state for the background isolate to bypass cross-isolate Hive deadlock issues
   static double? _destLat;
@@ -268,7 +268,6 @@ class MyBackgroundService {
           Uri.parse('$serverBaseUrl/api/routes/$_routeId/update-location/'),
           headers: {
             "Content-Type": "application/json",
-            "ngrok-skip-browser-warning": "true",
           },
           body: jsonEncode({
             "current_latitude": position.latitude,
