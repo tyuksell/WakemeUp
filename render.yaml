@@ -17,7 +17,7 @@ services:
           name: wakemeup-db
           property: connectionString
       - key: ALLOWED_HOSTS
-        value: "wakemeup-backend.onrender.com"
+        value: "wakemeup-fq0i.onrender.com"
 
 databases:
   - name: wakemeup-db

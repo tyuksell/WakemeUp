@@ -12,7 +12,7 @@ import '../utils/distance_calculator.dart';
 @pragma('vm:entry-point')
 class MyBackgroundService {
   // Production URL — Render deployment
-  static const String serverBaseUrl = 'https://wakemeup-backend.onrender.com';
+  static const String serverBaseUrl = 'https://wakemeup-fq0i.onrender.com';
 
   // In-memory state for the background isolate to bypass cross-isolate Hive deadlock issues
   static double? _destLat;
