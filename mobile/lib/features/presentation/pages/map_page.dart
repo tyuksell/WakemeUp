@@ -678,43 +678,59 @@ class _MapPageState extends State<MapPage> {
         : 'Hedef Koordinat: (${_selectedLat.toStringAsFixed(4)}, ${_selectedLng.toStringAsFixed(4)})';
 
     if (isOnline) {
+      final String deviceId = await HiveService.getOrCreateDeviceId();
+      final AlarmThresholds thresholds = await HiveService.getThresholds();
+      final Uri uri = Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/');
+      final Map<String, String> headers = {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+        'X-Device-Id': deviceId,
+      };
+      final String body = jsonEncode({
+        'destination_name': destName,
+        'dest_latitude': _selectedLat,
+        'dest_longitude': _selectedLng,
+        'threshold_far_m': thresholds.farM,
+        'threshold_mid_m': thresholds.midM,
+        'threshold_near_m': thresholds.nearM,
+      });
+
+      http.Response? response;
       try {
-        final String deviceId = await HiveService.getOrCreateDeviceId();
-        final AlarmThresholds thresholds = await HiveService.getThresholds();
-        final response = await http.post(
-          Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/'),
-          headers: {
-            'Content-Type': 'application/json',
-            'ngrok-skip-browser-warning': 'true',
-            'X-Device-Id': deviceId,
-          },
-          body: jsonEncode({
-            'destination_name': destName,
-            'dest_latitude': _selectedLat,
-            'dest_longitude': _selectedLng,
-            'threshold_far_m': thresholds.farM,
-            'threshold_mid_m': thresholds.midM,
-            'threshold_near_m': thresholds.nearM,
-          }),
-        ).timeout(const Duration(seconds: 8));
-
-        if (response.statusCode == 201) {
-          final data = jsonDecode(response.body);
-          final int routeId = data['id'];
-
-          await HiveService.setTrackingState(
-            routeId: routeId,
-            name: destName,
-            lat: _selectedLat,
-            lng: _selectedLng,
-          );
-
-          await _startTracking();
-        } else {
-          _showErrorSnackBar('Backend sunucusu hata verdi. Durum: ${response.statusCode}');
-          await _confirmOfflineFallback(destName, 'Sunucuya bağlanılamadı, offline devam edilsin mi?');
+        response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 8));
+      } on TimeoutException {
+        // SORUN 6 BENZERİ: Render'ın ücretsiz katmanı 15 dakika
+        // hareketsizlikten sonra uyur; ilk istek 30-50sn sürebilir. Bunu
+        // gerçek bir bağlantı hatası/"offline" sanıp kullanıcıya yanlışlıkla
+        // "offline devam edilsin mi?" diye sormak yerine, sunucunun
+        // uyandığını bildirip daha uzun bir zaman aşımıyla bir kez daha
+        // deniyoruz (bkz. history_page.dart'taki aynı düzeltme).
+        if (mounted) _showSuccessSnackBar('Sunucu uyanıyor, tekrar deneniyor...');
+        try {
+          response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 45));
+        } catch (e) {
+          response = null;
         }
       } catch (e) {
+        response = null;
+      }
+
+      if (response != null && response.statusCode == 201) {
+        final data = jsonDecode(response.body);
+        final int routeId = data['id'];
+
+        await HiveService.setTrackingState(
+          routeId: routeId,
+          name: destName,
+          lat: _selectedLat,
+          lng: _selectedLng,
+        );
+
+        await _startTracking();
+      } else if (response != null) {
+        _showErrorSnackBar('Backend sunucusu hata verdi. Durum: ${response.statusCode}');
+        await _confirmOfflineFallback(destName, 'Sunucuya bağlanılamadı, offline devam edilsin mi?');
+      } else {
         await _confirmOfflineFallback(destName, 'İşlem sırasında bir hata oluştu. Offline devam edilsin mi?');
       }
     } else {
