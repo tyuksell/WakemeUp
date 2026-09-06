@@ -10,13 +10,14 @@ class AppColors {
   // Theme Backgrounds
   static const Color darkBg = Color(0xFF0B0C10);
   static const Color darkCard = Color(0xFF1F2833);
-  static const Color lightBg = Color(0xFFF4F6F9);
-  static const Color lightCard = Color(0xFFFFFFFF);
 
   // Text Colors
   static const Color textWhite = Color(0xFFFFFFFF);
-  static const Color textDark = Color(0xFF1F2833);
   static const Color textGrey = Color(0xFFC5C6C7);
+  // Açıklama/tagline metinleri için daha yumuşak, "premium" ikincil ton.
+  static const Color textSecondary = Color(0xFF9CA3AF);
+  // Tarih, adres gibi üçüncül/meta bilgiler için en soluk ton.
+  static const Color textMuted = Color(0xFF7C8592);
 
   // Gradients
   static const Gradient neonBlueCyan = LinearGradient(

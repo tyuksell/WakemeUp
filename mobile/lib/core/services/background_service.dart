@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'hive_service.dart';
 import 'notification_service.dart';
 import '../utils/distance_calculator.dart';
+import '../utils/constants.dart';
 
 @pragma('vm:entry-point')
 class MyBackgroundService {
@@ -19,14 +20,34 @@ class MyBackgroundService {
   static double? _destLng;
   static String? _destName;
   static int? _routeId;
+  static String? _deviceId;
   static bool _isTracking = false;
   static bool _isMuted = false;
+  static AlarmThresholds _thresholds = AlarmThresholds.defaults;
 
   // Local notification triggers in-memory
   static bool _notified1km = false;
   static bool _notified500m = false;
   static bool _notified250m = false;
   static bool _notifiedArrival = false; // Varış noktasına ulaşıldığında tetiklenir
+
+  // ── SORUN 4 DÜZELTMESİ: ETA (tahmini varış süresi) güvenlik ağı ──────────
+  // Sabit metre eşikleri taşıma aracından bağımsız değildir: 1000m eşiği bir
+  // yürüyüşte ~12 dakika önceden uyarırken, saatte 120km giden bir trende
+  // sadece ~30 saniye önceden uyarır — tam da uyuyakalma riskinin en yüksek
+  // olduğu durumda en az reaksiyon süresini bırakır. Aşağıdaki ETA eşikleri
+  // mesafe eşiklerinin YERİNE değil, ONLARA EK bir güvenlik ağı olarak
+  // çalışır (bkz. _maybeEscalateByEta): hız yüksekse ilgili aşama, mesafe
+  // eşiği henüz aşılmamış olsa bile erken tetiklenir.
+  static double? _smoothedSpeedMps;
+  static const Duration _etaFar = Duration(minutes: 5);
+  static const Duration _etaMid = Duration(minutes: 2);
+  static const Duration _etaNear = Duration(seconds: 45);
+
+  /// GPS "speed" bu değerin altındayken (dururken/çok yavaşken) ETA
+  /// hesaplanmaz — mesafe/hız bölmesi anlamsız derecede büyük/gürültülü
+  /// sürelere yol açar.
+  static const double _minSpeedForEtaMps = 1.0; // ~3.6 km/h
 
   static Future<void> initializeService() async {
     final service = FlutterBackgroundService();
@@ -90,6 +111,8 @@ class MyBackgroundService {
         _destName = event['name'] as String? ?? _destName;
         _destLat = (event['latitude'] as num?)?.toDouble() ?? _destLat;
         _destLng = (event['longitude'] as num?)?.toDouble() ?? _destLng;
+        _deviceId = event['deviceId'] as String? ?? _deviceId;
+        _thresholds = _thresholdsFromEvent(event) ?? _thresholds;
         _isTracking = true;
         debugPrint('[BgService] sync update: Hedef=$_destName, Lat=$_destLat, Lng=$_destLng');
       }
@@ -122,12 +145,15 @@ class MyBackgroundService {
         _destName = event['name'] as String?;
         _destLat = (event['latitude'] as num?)?.toDouble();
         _destLng = (event['longitude'] as num?)?.toDouble();
+        _deviceId = event['deviceId'] as String? ?? _deviceId;
+        _thresholds = _thresholdsFromEvent(event) ?? AlarmThresholds.defaults;
         _isTracking = true;
         _isMuted = false;
         _notified1km = false;
         _notified500m = false;
         _notified250m = false;
         _notifiedArrival = false; // Yeni oturumda varış bildirimi sıfırla
+        _smoothedSpeedMps = null; // Yeni oturumda ETA hız ortalaması sıfırla
         debugPrint('[BgService] startTracking: Hedef=$_destName, Lat=$_destLat, Lng=$_destLng');
         await _acquireAndProcess(service);
       }
@@ -152,6 +178,8 @@ class MyBackgroundService {
             _destName ??= await HiveService.getDestName();
             _destLat ??= await HiveService.getDestLatitude();
             _destLng ??= await HiveService.getDestLongitude();
+            _deviceId ??= await HiveService.getDeviceId();
+            _thresholds = await HiveService.getThresholds();
             final bool isMuted = await HiveService.getIsMuted();
             _isTracking = true;
             _isMuted = isMuted;
@@ -212,6 +240,8 @@ class MyBackgroundService {
       try {
         _routeId ??= await HiveService.getActiveRouteId();
         _destName ??= await HiveService.getDestName();
+        _deviceId ??= await HiveService.getDeviceId();
+        _thresholds = await HiveService.getThresholds();
         final double? hiveLat = await HiveService.getDestLatitude();
         final double? hiveLng = await HiveService.getDestLongitude();
         if (hiveLat != null && hiveLat != 0.0) _destLat = hiveLat;
@@ -250,10 +280,14 @@ class MyBackgroundService {
 
     debugPrint('[BgService] Hesaplanan mesafe: ${distance.toStringAsFixed(1)} m');
 
-    // Hız hesaplama kaldırıldı
+    // ETA güvenlik ağı: online/offline modundan bağımsız olarak her konum
+    // güncellemesinde çalışır; mesafe bazlı tetikleme (backend ya da yerel
+    // fallback) ile aynı _notifiedXXX bayraklarını paylaştığı için aynı
+    // aşamanın iki kez tetiklenmesi mümkün değildir.
+    _maybeEscalateByEta(distance, position.speed, _destName ?? "Hedef");
 
     // Invoke UI update — 5m veya daha az kaldıysa arrived:true ilet
-    print('[BackgroundService] Hive yazılıyor: distance=$distance');
+    debugPrint('[BgService] UI güncelleniyor: distance=$distance');
     service.invoke('update', {
       "latitude": position.latitude,
       "longitude": position.longitude,
@@ -261,13 +295,22 @@ class MyBackgroundService {
       "arrived": distance <= 5,
     });
 
+    // Kalıcı bildirimde canlı mesafeyi göster (yalnızca Android foreground service).
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: 'WakeMeUp — ${_destName ?? "Hedef"}',
+        content: 'Kalan mesafe: ${_formatDistanceForNotification(distance)}',
+      );
+    }
+
     // 2. Synchronize with django server API
-    if (_routeId != 9999) {
+    if (_routeId != kOfflineRouteId) {
       try {
         final response = await http.post(
           Uri.parse('$serverBaseUrl/api/routes/$_routeId/update-location/'),
           headers: {
             "Content-Type": "application/json",
+            "X-Device-Id": _deviceId ?? '',
           },
           body: jsonEncode({
             "current_latitude": position.latitude,
@@ -302,6 +345,77 @@ class MyBackgroundService {
     }
   }
 
+  /// 'sync'/'startTracking' olayıyla gelen eşik verisini [AlarmThresholds]'e çevirir.
+  /// Üçü de eksiksiz gelmediyse null döner (çağıran taraf mevcut/varsayılan değeri korur).
+  static AlarmThresholds? _thresholdsFromEvent(Map? event) {
+    if (event == null) return null;
+    final far = (event['thresholdFarM'] as num?)?.toInt();
+    final mid = (event['thresholdMidM'] as num?)?.toInt();
+    final near = (event['thresholdNearM'] as num?)?.toInt();
+    if (far == null || mid == null || near == null) return null;
+    return AlarmThresholds(farM: far, midM: mid, nearM: near);
+  }
+
+  static String _formatDistanceForNotification(double meters) {
+    if (meters >= 1000) return '${(meters / 1000).toStringAsFixed(2)} km';
+    return '${meters.toStringAsFixed(0)} m';
+  }
+
+  /// SORUN 4 DÜZELTMESİ: Mesafe eşiklerine ek bir güvenlik ağı. GPS
+  /// "speed" alanından (Doppler tabanlı, cihaz tarafından hesaplanır) EMA ile
+  /// yumuşatılmış bir hız çıkarır ve tahmini varış süresi (ETA = mesafe/hız)
+  /// [_etaFar]/[_etaMid]/[_etaNear] eşiklerinin altına düşerse ilgili aşamayı,
+  /// mesafe eşiği henüz aşılmamış olsa bile erken tetikler. Böylece hızlı bir
+  /// taşıma aracında (tren/otobüs) sabit metre eşiğinin bırakacağı reaksiyon
+  /// süresi, yürüyüşe kıyasla orantısız şekilde kısalmaz.
+  static void _maybeEscalateByEta(
+    double distanceMeters,
+    double? rawSpeedMps,
+    String destination,
+  ) {
+    if (rawSpeedMps == null || rawSpeedMps < 0) return;
+
+    _smoothedSpeedMps = _smoothedSpeedMps == null
+        ? rawSpeedMps
+        : (_smoothedSpeedMps! * 0.7 + rawSpeedMps * 0.3);
+
+    final double speed = _smoothedSpeedMps!;
+    // Dururken/çok yavaşken (ör. yürüyüş molası) ETA anlamsız derecede büyük
+    // veya gürültülü olur; bu aşamada yalnızca mesafe eşiklerine güvenilir.
+    if (speed < _minSpeedForEtaMps) return;
+
+    final Duration eta = Duration(seconds: (distanceMeters / speed).round());
+
+    if (eta <= _etaNear && !_notified250m) {
+      _notified250m = true;
+      _notified500m = true;
+      _notified1km = true;
+      debugPrint('[BgService] ETA güvenlik ağı: ~${eta.inSeconds}sn kaldı (hız=${speed.toStringAsFixed(1)}m/s) — NEAR erken tetiklendi.');
+      NotificationService.ringAlarm(
+        id: 3,
+        title: 'Hedefe Ulaşılmak Üzere! (~${eta.inSeconds}sn kaldı)',
+        body: 'Hızınıza göre $destination noktasına yaklaşık ${eta.inSeconds} saniye kaldı.',
+      );
+    } else if (eta <= _etaMid && !_notified500m) {
+      _notified500m = true;
+      _notified1km = true;
+      debugPrint('[BgService] ETA güvenlik ağı: ~${eta.inMinutes}dk kaldı (hız=${speed.toStringAsFixed(1)}m/s) — MID erken tetiklendi.');
+      NotificationService.showAlert(
+        id: 2,
+        title: 'Hedefe Yaklaşıldı! (~${eta.inMinutes} dk kaldı)',
+        body: 'Hızınıza göre $destination noktasına yaklaşık ${eta.inMinutes} dakika kaldı.',
+      );
+    } else if (eta <= _etaFar && !_notified1km) {
+      _notified1km = true;
+      debugPrint('[BgService] ETA güvenlik ağı: ~${eta.inMinutes}dk kaldı (hız=${speed.toStringAsFixed(1)}m/s) — FAR erken tetiklendi.');
+      NotificationService.showAlert(
+        id: 1,
+        title: 'Menzile Girildi (~${eta.inMinutes} dk kaldı)',
+        body: 'Hızınıza göre $destination noktasına yaklaşık ${eta.inMinutes} dakika kaldı.',
+      );
+    }
+  }
+
   static void _handleLocalGeofence(double distance, String destination) {
     // Varış noktası: 5 metre veya daha az kaldığında bir kez bildir
     if (distance <= 5 && !_notifiedArrival) {
@@ -309,72 +423,64 @@ class MyBackgroundService {
       _notified250m = true;
       _notified500m = true;
       _notified1km = true;
-      NotificationService.showAlert(
+      // SORUN 1/2 DÜZELTMESİ: Tek seferlik bildirim yerine, kullanıcı
+      // durdurana kadar döngüyle çalan gerçek alarm (bkz. NotificationService.ringAlarm).
+      NotificationService.ringAlarm(
         id: 4,
         title: 'Varış Noktasına Ulaşıldı! 🎯',
         body: '$destination hedefine ulaştınız.',
       );
-    } else if (distance <= 250 && !_notified250m) {
+    } else if (distance <= _thresholds.nearM && !_notified250m) {
       _notified250m = true;
       _notified500m = true;
       _notified1km = true;
-      NotificationService.showAlert(
+      NotificationService.ringAlarm(
         id: 3,
-        title: 'Hedefe Ulaşılmak Üzere! (250m)',
-        body: '$destination noktasına 250m mesafe kaldı.',
+        title: 'Hedefe Ulaşılmak Üzere! (${_thresholds.nearM}m)',
+        body: '$destination noktasına ${_thresholds.nearM}m mesafe kaldı.',
       );
-    } else if (distance <= 500 && !_notified500m) {
+    } else if (distance <= _thresholds.midM && !_notified500m) {
       _notified500m = true;
       _notified1km = true;
       NotificationService.showAlert(
         id: 2,
-        title: 'Hedefe Yaklaşıldı! (500m)',
-        body: '$destination noktasına 500m mesafe kaldı.',
+        title: 'Hedefe Yaklaşıldı! (${_thresholds.midM}m)',
+        body: '$destination noktasına ${_thresholds.midM}m mesafe kaldı.',
       );
-    } else if (distance <= 1000 && !_notified1km) {
+    } else if (distance <= _thresholds.farM && !_notified1km) {
       _notified1km = true;
       NotificationService.showAlert(
         id: 1,
-        title: 'Menzile Girildi (1km)',
-        body: '$destination noktasına 1km mesafe kaldı.',
+        title: 'Menzile Girildi (${_thresholds.farM}m)',
+        body: '$destination noktasına ${_thresholds.farM}m mesafe kaldı.',
       );
     }
   }
 
   static void _triggerIsolateNotification(String stage, String destination) {
-    if (stage == 'STAGE_ARRIVED') {
-      _notifiedArrival = true;
+    if (stage == 'STAGE_NEAR') {
       _notified250m = true;
       _notified500m = true;
       _notified1km = true;
-      NotificationService.showAlert(
-        id: 4,
-        title: 'Varış Noktasına Ulaşıldı! 🎯',
-        body: '$destination hedefine ulaştınız.',
-      );
-    } else if (stage == 'STAGE_250M') {
-      _notified250m = true;
-      _notified500m = true;
-      _notified1km = true;
-      NotificationService.showAlert(
+      NotificationService.ringAlarm(
         id: 3,
-        title: 'Hedefe Ulaşılmak Üzere! (250m)',
-        body: '$destination noktasına 250m mesafe kaldı.',
+        title: 'Hedefe Ulaşılmak Üzere! (${_thresholds.nearM}m)',
+        body: '$destination noktasına ${_thresholds.nearM}m mesafe kaldı.',
       );
-    } else if (stage == 'STAGE_500M') {
+    } else if (stage == 'STAGE_MID') {
       _notified500m = true;
       _notified1km = true;
       NotificationService.showAlert(
         id: 2,
-        title: 'Hedefe Yaklaşıldı! (500m)',
-        body: '$destination noktasına 500m mesafe kaldı.',
+        title: 'Hedefe Yaklaşıldı! (${_thresholds.midM}m)',
+        body: '$destination noktasına ${_thresholds.midM}m mesafe kaldı.',
       );
-    } else if (stage == 'STAGE_1KM') {
+    } else if (stage == 'STAGE_FAR') {
       _notified1km = true;
       NotificationService.showAlert(
         id: 1,
-        title: 'Menzile Girildi (1km)',
-        body: '$destination noktasına 1km mesafe kaldı.',
+        title: 'Menzile Girildi (${_thresholds.farM}m)',
+        body: '$destination noktasına ${_thresholds.farM}m mesafe kaldı.',
       );
     }
   }

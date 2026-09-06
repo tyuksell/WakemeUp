@@ -1,3 +1,4 @@
+import 'package:alarm/alarm.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -62,6 +63,12 @@ class NotificationService {
       );
       await androidPlugin.createNotificationChannel(serviceChannel);
     }
+
+    // `alarm` paketi: STAGE_NEAR/varış gibi kritik anlarda sessiz modu/DND'yi
+    // atlayan, döngüyle çalan gerçek alarm sesi için (bkz. ringAlarm). Her
+    // izolatta (main + background service) ayrı çağrılması gerekir; birden
+    // fazla çağrı güvenlidir.
+    await Alarm.init();
   }
 
   static Future<bool> requestPermissions() async {
@@ -106,8 +113,58 @@ class NotificationService {
     );
   }
 
+  /// STAGE_NEAR ve varış gibi "kullanıcıyı uyandırma" anları için gerçek bir
+  /// çalar saat gibi davranan alarm çalar: sessiz moddayken/Rahatsız Etmeyin
+  /// açıkken bile duyulur (STREAM_ALARM / usageAlarm), ekranı uyandırır
+  /// (full-screen intent) ve kullanıcı durdurana ya da [stopRingingAlarm]
+  /// çağrılana kadar döngüyle, sesi kademeli artırarak çalmaya devam eder —
+  /// tek seferlik bir bildirim sesi değildir.
+  ///
+  /// Aynı anda yalnızca tek bir hedefe yönelik takip yapıldığından, yeni bir
+  /// aşama tetiklendiğinde önceki aşamanın alarmı varsa önce durdurulur;
+  /// aksi halde ikisi kuyruğa girip yeni (daha acil) alarmın sesini geciktirir.
+  static Future<void> ringAlarm({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    await Alarm.stopAll();
+    await Alarm.set(
+      alarmSettings: AlarmSettings(
+        id: id,
+        // Neredeyse anında çalması için: geofence eşiği aşıldığı an tetiklenir,
+        // ileri bir tarihe planlanan bir "alarm kur" değildir.
+        dateTime: DateTime.now().add(const Duration(milliseconds: 300)),
+        loopAudio: true,
+        vibrate: true,
+        androidFullScreenIntent: true,
+        // Uygulama arka planda öldürülse bile bu anlık alarmın tekrar
+        // kurulacağı bir "gelecek alarm" olmadığından kapalı; native servis
+        // zaten uygulama öldürüldüğünde alarmı durdurur.
+        warningNotificationOnKill: false,
+        volumeSettings: VolumeSettings.fade(
+          volume: 1.0,
+          fadeDuration: const Duration(seconds: 8),
+          volumeEnforced: true,
+        ),
+        notificationSettings: NotificationSettings(
+          title: title,
+          body: body,
+          stopButton: 'Durdur',
+        ),
+      ),
+    );
+  }
+
+  /// Belirli bir alarmı (örn. kullanıcı uygulama içinden durdurduğunda) durdurur.
+  static Future<void> stopRingingAlarm(int id) => Alarm.stop(id);
+
+  /// Herhangi bir alarm şu an çalıyor mu?
+  static Future<bool> isAnyAlarmRinging() => Alarm.isRinging();
+
   static Future<void> cancelAll() async {
     await _notificationsPlugin.cancelAll();
+    await Alarm.stopAll();
   }
 
   static Future<void> cancelNotification(int id) async {

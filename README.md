@@ -76,7 +76,14 @@ python -m venv venv
 source venv/bin/activate
 
 # Gerekli paketleri yükleyin
-pip install django djangorestframework django-cors-headers
+pip install -r requirements.txt
+
+# Yerel geliştirmede DEBUG varsayılan olarak kapalıdır (üretimde güvenlik için).
+# Statik dosyaların ve hata sayfalarının doğru çalışması için açın:
+# Windows (PowerShell):
+$env:DEBUG="True"
+# macOS/Linux:
+export DEBUG=True
 
 # Veritabanı geçişlerini (migration) uygulayın
 python manage.py migrate
@@ -111,21 +118,32 @@ flutter run
 
 ## 🔌 API Uç Noktaları (Endpoints)
 
-Backend API'si aşağıdaki uç noktaları sağlar:
+Backend API'si aşağıdaki uç noktaları sağlar. Uygulamada hesap sistemi olmadığından
+sahiplik, her istekte gönderilmesi **zorunlu** olan `X-Device-Id` başlığı ile
+kontrol edilir (mobil istemci bu kimliği ilk açılışta üretip cihazda saklar).
+Başlık eksikse `400`, rota başka bir cihaza aitse `403` döner.
 
 ### 1. Rota Oluşturma
 * **URL:** `/api/routes/`
 * **Metot:** `POST`
-* **İstek Gövdesi (JSON):**
+* **İstek Gövdesi (JSON):** `threshold_*` alanları isteğe bağlıdır; gönderilmezse 1km/500m/250m varsayılanları kullanılır. Gönderiliyorsa üçü birden zorunludur ve `far > mid > near > 0` sıralamasında olmalıdır.
   ```json
   {
     "destination_name": "Kadıköy Metro",
     "dest_latitude": 40.9901,
-    "dest_longitude": 29.0223
+    "dest_longitude": 29.0223,
+    "threshold_far_m": 1000,
+    "threshold_mid_m": 500,
+    "threshold_near_m": 250
   }
   ```
 
-### 2. Anlık Konum Güncelleme ve Geofence Sorgulama
+### 2. Geçmiş Rotaları Listeleme
+* **URL:** `/api/routes/`
+* **Metot:** `GET`
+* **Yanıt Gövdesi (JSON):** İsteği atan cihaza ait rotaların en yeniden en eskiye sıralanmış listesi (en fazla 50 kayıt).
+
+### 3. Anlık Konum Güncelleme ve Geofence Sorgulama
 * **URL:** `/api/routes/<route_id>/update-location/`
 * **Metot:** `POST`
 * **İstek Gövdesi (JSON):**
@@ -135,7 +153,7 @@ Backend API'si aşağıdaki uç noktaları sağlar:
     "current_longitude": 29.0250
   }
   ```
-* **Yanıt Gövdesi (JSON):**
+* **Yanıt Gövdesi (JSON):** `target_stage`, rotanın kendi eşiklerine göre `STAGE_FAR` / `STAGE_MID` / `STAGE_NEAR` değerlerinden birini alır.
   ```json
   {
     "route_id": 1,
@@ -143,12 +161,12 @@ Backend API'si aşağıdaki uç noktaları sağlar:
     "status": "ACTIVE",
     "is_muted": false,
     "trigger_alarm": true,
-    "target_stage": "STAGE_500M",
+    "target_stage": "STAGE_MID",
     "message": "Hedefe 500 metre veya daha az mesafe kaldı! Bildirim/alarm tetiklenmeli."
   }
   ```
 
-### 3. Alarmı Susturma / İptal Etme
+### 4. Alarmı Susturma / İptal Etme
 * **URL:** `/api/routes/<route_id>/mute/`
 * **Metot:** `POST`
 * **Yanıt Gövdesi (JSON):**

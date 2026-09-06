@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:alarm/alarm.dart';
+import 'package:alarm/utils/alarm_set.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:http/http.dart' as http;
@@ -6,11 +8,18 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/services/hive_service.dart';
 import '../../../../core/services/notification_service.dart';
 import '../../../../core/services/background_service.dart';
+import '../../../../core/utils/constants.dart';
 import '../widgets/glass_card.dart';
-import '../widgets/neon_button.dart';
+import '../widgets/hold_to_confirm_button.dart';
+import '../widgets/grain_overlay.dart';
+
+/// Susturma onaylandıktan sonra, geri alınamaz eylemler (backend'e "bir daha
+/// asla tetikleme" bildirimi, servisi durdurma) uygulanmadan önce kullanıcıya
+/// tanınan "Geri Al" penceresi.
+const _kMuteUndoWindow = Duration(seconds: 5);
 
 class TrackingPage extends StatefulWidget {
-  const TrackingPage({Key? key}) : super(key: key);
+  const TrackingPage({super.key});
 
   @override
   State<TrackingPage> createState() => _TrackingPageState();
@@ -24,6 +33,16 @@ class _TrackingPageState extends State<TrackingPage> {
   double? _distanceMeters;
 
   bool _isMuted = false;
+
+  /// Hold-to-confirm susturma onaylandı ama "Geri Al" penceresi henüz dolmadı.
+  /// Bu sırada tracking/backend/Hive durumu HİÇ değişmemiştir — bu yüzden geri
+  /// alma tamamen ücretsizdir (bkz. _confirmMute / _cancelPendingMute).
+  bool _mutePending = false;
+  Timer? _muteUndoTimer;
+
+  /// `alarm` paketinden gelen, o an çalmakta olan bir alarm var mı bilgisi.
+  bool _alarmIsRinging = false;
+  StreamSubscription<AlarmSet>? _alarmRingingSub;
 
   /// Varış noktasına ulaşıldığında (mesafe <= 5m) true olur.
   /// Takip devam eder; yalnızca UI etiketi gösterilir.
@@ -45,7 +64,13 @@ class _TrackingPageState extends State<TrackingPage> {
     super.initState();
     _loadInitialState();
     _setupBackgroundListener();
-    
+
+    _alarmIsRinging = Alarm.ringing.value.alarms.isNotEmpty;
+    _alarmRingingSub = Alarm.ringing.listen((alarmSet) {
+      if (!mounted) return;
+      setState(() => _alarmIsRinging = alarmSet.alarms.isNotEmpty);
+    });
+
     // Arka plan servisinden taze veri iste (eğer zaten çalışıyorsa)
     _triggerSync();
 
@@ -56,6 +81,8 @@ class _TrackingPageState extends State<TrackingPage> {
   @override
   void dispose() {
     _syncTimer?.cancel();
+    _muteUndoTimer?.cancel();
+    _alarmRingingSub?.cancel();
     super.dispose();
   }
 
@@ -85,16 +112,22 @@ class _TrackingPageState extends State<TrackingPage> {
   }
 
   Future<void> _triggerSync() async {
-    final routeId = await HiveService.getActiveRouteId() ?? 9999;
+    final routeId = await HiveService.getActiveRouteId() ?? kOfflineRouteId;
     final name = await HiveService.getDestName() ?? "Hedef";
     final lat = await HiveService.getDestLatitude() ?? 0.0;
     final lng = await HiveService.getDestLongitude() ?? 0.0;
+    final deviceId = await HiveService.getOrCreateDeviceId();
+    final thresholds = await HiveService.getThresholds();
 
     FlutterBackgroundService().invoke('sync', {
       'routeId': routeId,
       'name': name,
       'latitude': lat,
       'longitude': lng,
+      'deviceId': deviceId,
+      'thresholdFarM': thresholds.farM,
+      'thresholdMidM': thresholds.midM,
+      'thresholdNearM': thresholds.nearM,
     });
   }
 
@@ -164,27 +197,76 @@ class _TrackingPageState extends State<TrackingPage> {
     });
   }
 
-  Future<void> _muteAlarm() async {
-    // 1. Set local database state
+  /// SORUN 3 DÜZELTMESİ (adım 1/2): Kullanıcı düğmeyi 3 saniye basılı tutup
+  /// onayladıktan SONRA çağrılır. Henüz hiçbir kalıcı/geri dönüşü olmayan
+  /// eylem (Hive, backend, servis durdurma) yapılmaz — sadece o an çalan
+  /// alarm sesi susturulur ve [_kMuteUndoWindow] kadar "Geri Al" penceresi
+  /// açılır. Bu sayede yarı uykulu bir kullanıcının erken tetiklenen bir
+  /// alarmı yanlışlıkla kalıcı olarak durdurması engellenmiş olur.
+  void _confirmMute() {
+    if (_mutePending) return;
+
+    NotificationService.cancelAll();
+    setState(() => _mutePending = true);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: _kMuteUndoWindow,
+        backgroundColor: AppColors.neonPink,
+        behavior: SnackBarBehavior.floating,
+        content: const Text(
+          'Alarm susturuluyor, takip birazdan sonlandırılacak...',
+        ),
+        action: SnackBarAction(
+          label: 'GERİ AL',
+          textColor: Colors.white,
+          onPressed: _cancelPendingMute,
+        ),
+      ),
+    );
+
+    _muteUndoTimer = Timer(_kMuteUndoWindow, _finalizeMute);
+  }
+
+  /// "Geri Al"a basıldığında: henüz hiçbir kalıcı değişiklik yapılmadığı için
+  /// bekleyen zamanlayıcıyı iptal etmek tek başına yeterlidir; takip
+  /// kesintisiz devam eder.
+  void _cancelPendingMute() {
+    _muteUndoTimer?.cancel();
+    _muteUndoTimer = null;
+    if (!mounted) return;
+    setState(() => _mutePending = false);
+    _showInfoSnackBar('Susturma iptal edildi, takip devam ediyor.');
+  }
+
+  /// SORUN 3 DÜZELTMESİ (adım 2/2): "Geri Al" penceresi dolunca asıl (kalıcı)
+  /// susturma burada uygulanır — eski _muteAlarm ile aynı geri dönüşü olmayan
+  /// adımlar (Hive, backend "bir daha tetikleme", servisi durdurma).
+  Future<void> _finalizeMute() async {
+    _muteUndoTimer = null;
+
     await HiveService.setIsMuted(true);
     await NotificationService.cancelAll();
-    
-    setState(() {
-      _isMuted = true;
-    });
 
-    // 2. Stop Background Service
+    if (mounted) {
+      setState(() {
+        _isMuted = true;
+        _mutePending = false;
+      });
+    }
+
     FlutterBackgroundService().invoke('stopService');
 
-    // 3. Notify Backend
     final routeId = await HiveService.getActiveRouteId();
-    if (routeId != null && routeId != 9999) {
+    if (routeId != null && routeId != kOfflineRouteId) {
       try {
+        final deviceId = await HiveService.getOrCreateDeviceId();
         await http.post(
           Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/$routeId/mute/'),
           headers: {
             "Content-Type": "application/json",
             "ngrok-skip-browser-warning": "true",
+            "X-Device-Id": deviceId,
           },
         ).timeout(const Duration(seconds: 4));
       } catch (e) {
@@ -192,10 +274,14 @@ class _TrackingPageState extends State<TrackingPage> {
       }
     }
 
-    _showInfoSnackBar("Alarm susturuldu ve geofence takibi sonlandırıldı.");
+    if (mounted) {
+      _showInfoSnackBar("Alarm susturuldu ve geofence takibi sonlandırıldı.");
+    }
   }
 
   Future<void> _stopTrackingSession() async {
+    _muteUndoTimer?.cancel();
+    _muteUndoTimer = null;
     await HiveService.stopTracking();
     await NotificationService.cancelAll();
     FlutterBackgroundService().invoke('stopService');
@@ -268,6 +354,8 @@ class _TrackingPageState extends State<TrackingPage> {
             ),
           ),
 
+          const GrainOverlay(),
+
           SafeArea(
             child: SingleChildScrollView(
               child: Padding(
@@ -309,16 +397,63 @@ class _TrackingPageState extends State<TrackingPage> {
                     ),
                     const SizedBox(height: 30),
 
+                    // Alarm o an çalıyorsa: uygulama ön plandaysa bildirimin
+                    // kendi "Durdur" düğmesini beklemeden buradan da durdurulabilir.
+                    if (_alarmIsRinging)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 24),
+                        child: GestureDetector(
+                          onTap: () => Alarm.stopAll(),
+                          child: Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: AppColors.neonPink.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: AppColors.neonPink, width: 1.5),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.alarm, color: AppColors.neonPink, size: 26),
+                                const SizedBox(width: 12),
+                                const Expanded(
+                                  child: Text(
+                                    'ALARM ÇALIYOR',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.neonPink,
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: const Text(
+                                    'DURDUR',
+                                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+
                     // Distance display
                     Center(
                       child: Column(
                         children: [
                           const Text(
-                            'Kalan Mesafe',
+                            'KALAN MESAFE',
                             style: TextStyle(
-                              color: AppColors.textGrey,
-                              fontSize: 16,
-                              letterSpacing: 1.0,
+                              color: AppColors.textMuted,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 1.6,
                             ),
                           ),
                           const SizedBox(height: 10),
@@ -427,7 +562,7 @@ class _TrackingPageState extends State<TrackingPage> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Başlangıç', style: TextStyle(color: AppColors.textGrey, fontSize: 12)),
+                              const Text('Başlangıç', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
                               Text('Hedef', style: TextStyle(color: theme.colorScheme.secondary, fontSize: 12, fontWeight: FontWeight.bold)),
                             ],
                           ),
@@ -444,18 +579,21 @@ class _TrackingPageState extends State<TrackingPage> {
                                 width: 1,
                               ),
                             ),
-                            child: const Row(
+                            child: Row(
                               children: [
-                                Icon(Icons.warning_amber_rounded,
+                                const Icon(Icons.warning_amber_rounded,
                                     color: AppColors.neonOrange, size: 20),
-                                SizedBox(width: 10),
+                                const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
-                                    'Alarmı susturursan takip tamamen durur ve tekrar otomatik başlamaz.',
+                                    'Alarmı susturmak için düğmeyi 3 saniye basılı tutmanız gerekir. '
+                                    'Onayladıktan sonra ${_kMuteUndoWindow.inSeconds} saniye içinde '
+                                    '"Geri Al" diyebilirsiniz; süre dolduğunda takip tamamen durur ve '
+                                    'tekrar otomatik başlamaz.',
                                     style: TextStyle(
-                                      color: AppColors.textGrey,
+                                      color: AppColors.textSecondary,
                                       fontSize: 12,
-                                      height: 1.4,
+                                      height: 1.5,
                                     ),
                                   ),
                                 ),
@@ -469,11 +607,32 @@ class _TrackingPageState extends State<TrackingPage> {
 
                     // Mute / Stop Action Buttons
                     if (!_isMuted) ...[
-                      NeonButton(
-                        text: 'Alarmı Sustur (Manuel)',
-                        gradient: AppColors.neonPinkOrange,
-                        onTap: _muteAlarm,
-                      ),
+                      if (_mutePending)
+                        Container(
+                          height: 60,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: AppColors.neonPink.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(30),
+                            border: Border.all(color: AppColors.neonPink, width: 1),
+                          ),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 16),
+                            child: Text(
+                              'Susturuluyor... Yukarıdaki bildirimden "GERİ AL" ile iptal edebilirsiniz',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                            ),
+                          ),
+                        )
+                      else
+                        HoldToConfirmButton(
+                          text: 'Alarmı Sustur (3sn Basılı Tut)',
+                          holdingText: 'Bırakma, Susturuluyor...',
+                          gradient: AppColors.neonPinkOrange,
+                          holdDuration: const Duration(seconds: 3),
+                          onConfirmed: _confirmMute,
+                        ),
                       const SizedBox(height: 16),
                     ],
 

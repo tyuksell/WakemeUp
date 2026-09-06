@@ -12,11 +12,13 @@ import 'dart:convert';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:uuid/uuid.dart';
+import 'package:permission_handler/permission_handler.dart' as ph;
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/services/hive_service.dart';
 import '../../../../core/services/background_service.dart';
 import '../../../../core/services/notification_service.dart';
 import '../../../../core/utils/distance_calculator.dart';
+import '../../../../core/utils/constants.dart';
 import '../widgets/neon_button.dart';
 import 'tracking_page.dart';
 
@@ -64,6 +66,9 @@ class _MapPageState extends State<MapPage> {
   double? _previewDistanceMeters;
   bool _isCalculatingDistance = false;
 
+  // Favori hedefler (ev/iş gibi) — hızlı seçim için.
+  List<FavoriteDestination> _favorites = [];
+
   // Mapbox token (.env'den okunur)
   String get _mapboxToken => dotenv.env['MAPBOX_ACCESS_TOKEN'] ?? '';
 
@@ -73,13 +78,66 @@ class _MapPageState extends State<MapPage> {
     _sessionToken = _uuid.v4(); // İlk oturum token'ı
     // TextField değişince suffixIcon rebuild'i tetikle
     _searchController.addListener(() => setState(() {}));
-    
+    _loadFavorites();
+
     // Sayfa geçiş animasyonunun pürüzsüz tamamlanması için konum alma işlemini geciktiriyoruz.
     Future.delayed(const Duration(milliseconds: 400), () {
       if (mounted) {
         _determinePosition();
       }
     });
+  }
+
+  Future<void> _loadFavorites() async {
+    final favorites = await HiveService.getFavorites();
+    if (mounted) setState(() => _favorites = favorites);
+  }
+
+  Future<void> _selectFavorite(FavoriteDestination favorite) async {
+    setState(() {
+      _selectedLat = favorite.lat;
+      _selectedLng = favorite.lng;
+      _suggestions = [];
+      _searchController.text = favorite.name;
+      _previewDistanceMeters = null;
+    });
+    _mapboxMap?.flyTo(
+      CameraOptions(center: Point(coordinates: Position(favorite.lng, favorite.lat)), zoom: 16.5),
+      MapAnimationOptions(duration: 800),
+    );
+    await _updateMarker(favorite.lat, favorite.lng);
+    await _updatePreviewDistance(favorite.lat, favorite.lng);
+  }
+
+  Future<void> _saveCurrentAsFavorite() async {
+    final defaultName = _searchController.text.trim();
+    if (defaultName.isEmpty) {
+      _showErrorSnackBar('Önce haritadan veya aramadan bir hedef seçin.');
+      return;
+    }
+    final controller = TextEditingController(text: defaultName);
+    final String? name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Favorilere Ekle'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Örn: Ev, İş'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Kaydet'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    await HiveService.addFavorite(FavoriteDestination(name: name, lat: _selectedLat, lng: _selectedLng));
+    await _loadFavorites();
+    if (mounted) _showSuccessSnackBar('"$name" favorilere eklendi.');
   }
 
   @override
@@ -609,17 +667,10 @@ class _MapPageState extends State<MapPage> {
     // Bildirim izni
     await NotificationService.requestPermissions();
 
-    // Android 10+ arka plan konum izni — servis başlamadan önce alınmalı.
-    // Kullanıcı reddederse yine de devam edilir; ancak arka plan GPS çalışmaz.
-    final geo.LocationPermission locPerm = await geo.Geolocator.checkPermission();
-    if (locPerm == geo.LocationPermission.denied ||
-        locPerm == geo.LocationPermission.deniedForever) {
-      await geo.Geolocator.requestPermission();
-    }
-    // ACCESS_BACKGROUND_LOCATION için sistem ayarlarına yönlendirme gerekebilir
-    // (Android 11+ kullanıcıyı Ayarlar > Uygulama > İzinler'e yönlendirir).
-    // Burada ek bir openAppSettings çağrısı yapmıyoruz; zira bu akış zaten
-    // permission_handler üzerinden notification tarafında yapılıyor.
+    // Konum izni + platforma özgü arka plan takip güvencesi (iOS "Always",
+    // Android pil optimizasyonu istisnası). Kullanıcı reddederse yine de
+    // devam edilir; ancak arka plan takibi güvenilir çalışmayabilir.
+    await _ensureReliableBackgroundTracking();
 
     final bool isOnline = await _hasActualInternet();
     final String destName = _searchController.text.isNotEmpty
@@ -628,16 +679,22 @@ class _MapPageState extends State<MapPage> {
 
     if (isOnline) {
       try {
+        final String deviceId = await HiveService.getOrCreateDeviceId();
+        final AlarmThresholds thresholds = await HiveService.getThresholds();
         final response = await http.post(
           Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/'),
           headers: {
             'Content-Type': 'application/json',
             'ngrok-skip-browser-warning': 'true',
+            'X-Device-Id': deviceId,
           },
           body: jsonEncode({
             'destination_name': destName,
             'dest_latitude': _selectedLat,
             'dest_longitude': _selectedLng,
+            'threshold_far_m': thresholds.farM,
+            'threshold_mid_m': thresholds.midM,
+            'threshold_near_m': thresholds.nearM,
           }),
         ).timeout(const Duration(seconds: 8));
 
@@ -668,6 +725,97 @@ class _MapPageState extends State<MapPage> {
     if (mounted) setState(() => _isLoading = false);
   }
 
+  /// Platforma özgü, arka planda güvenilir konum takibi için gereken izin/ayar
+  /// akışını yürütür. Her iki platformda da kullanıcı reddederse akış
+  /// engellenmez; sadece takip arka planda düzensiz çalışabilir.
+  Future<void> _ensureReliableBackgroundTracking() async {
+    // Konum izni (When In Use / Always) — servis başlamadan önce alınmalı.
+    geo.LocationPermission locPerm = await geo.Geolocator.checkPermission();
+    if (locPerm == geo.LocationPermission.denied) {
+      locPerm = await geo.Geolocator.requestPermission();
+    }
+    if (locPerm == geo.LocationPermission.deniedForever) return;
+
+    if (Platform.isIOS) {
+      // iOS'ta arka planda GPS almak için "Her Zaman İzin Ver" (Always) şart;
+      // "Uygulamayı Kullanırken" (whileInUse) izni ekran kilitlenince veya
+      // uygulama arka plana alınınca konum akışını durdurur. iOS bu izni
+      // ikinci bir sistem isteğiyle (veya kullanıcı Ayarlar'dan) verir.
+      final geo.LocationPermission refreshed = await geo.Geolocator.checkPermission();
+      if (refreshed == geo.LocationPermission.whileInUse && mounted) {
+        final bool? openSettings = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Arka Planda Takip İçin İzin Gerekli'),
+            content: const Text(
+              'WakeMeUp, ekranınız kilitliyken veya uygulama arka plandayken de '
+              'hedefe yaklaştığınızı algılayabilmek için konum iznini "Her Zaman '
+              'İzin Ver" olarak ayarlamanızı gerektirir. Aksi halde alarm yalnızca '
+              'uygulama ekranda açıkken tetiklenir.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Şimdilik Devam Et'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Ayarları Aç'),
+              ),
+            ],
+          ),
+        );
+        if (openSettings == true) {
+          await geo.Geolocator.openAppSettings();
+        }
+      }
+    } else if (Platform.isAndroid) {
+      // Android'de üretici pil optimizasyonları (Xiaomi/Huawei/Samsung vb.)
+      // foreground service'i yine de arka planda öldürebilir. Kullanıcıdan
+      // uygulamayı optimizasyon istisnasına almasını istiyoruz.
+      final ph.PermissionStatus batteryStatus =
+          await ph.Permission.ignoreBatteryOptimizations.status;
+      if (!batteryStatus.isGranted && mounted) {
+        final bool? requestExemption = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Güvenilir Arka Plan Takibi'),
+            content: const Text(
+              'Telefonunuzun pil tasarrufu ayarları, ekran kapalıyken konum '
+              'takibini durdurabilir. Alarmın güvenilir çalışması için WakeMeUp\'ı '
+              'pil optimizasyonundan muaf tutmanızı öneririz.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Şimdilik Geç'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('İzin Ver'),
+              ),
+            ],
+          ),
+        );
+        if (requestExemption == true) {
+          await ph.Permission.ignoreBatteryOptimizations.request();
+        }
+      }
+
+      // `alarm` paketinin STAGE_NEAR/varış anlarında gerçek çalar saat gibi
+      // neredeyse anında tetiklenebilmesi için Android 12+ üzerinde gereken izin.
+      try {
+        final ph.PermissionStatus exactAlarmStatus =
+            await ph.Permission.scheduleExactAlarm.status;
+        if (!exactAlarmStatus.isGranted) {
+          await ph.Permission.scheduleExactAlarm.request();
+        }
+      } catch (_) {
+        // Bu izin tipini desteklemeyen OS sürümlerinde sessizce geç.
+      }
+    }
+  }
+
   Future<void> _confirmOfflineFallback(String destName, String message) async {
     final bool? proceed = await showDialog<bool>(
       context: context,
@@ -688,7 +836,7 @@ class _MapPageState extends State<MapPage> {
 
   Future<void> _startOfflineTracking(String destName) async {
     await HiveService.setTrackingState(
-      routeId: 9999,
+      routeId: kOfflineRouteId,
       name: destName,
       lat: _selectedLat,
       lng: _selectedLng,
@@ -716,10 +864,12 @@ class _MapPageState extends State<MapPage> {
     await Future.delayed(const Duration(milliseconds: 800));
 
     // Hive'dan onaylanan hedef bilgilerini oku.
-    final routeId = await HiveService.getActiveRouteId() ?? 9999;
+    final routeId = await HiveService.getActiveRouteId() ?? kOfflineRouteId;
     final name = await HiveService.getDestName() ?? "Hedef";
     final lat = await HiveService.getDestLatitude() ?? 0.0;
     final lng = await HiveService.getDestLongitude() ?? 0.0;
+    final deviceId = await HiveService.getOrCreateDeviceId();
+    final thresholds = await HiveService.getThresholds();
 
     // Birincil mesaj: startTracking — ilk konum alımını ve tüm state'i initialize eder.
     service.invoke('startTracking', {
@@ -727,6 +877,10 @@ class _MapPageState extends State<MapPage> {
       'name': name,
       'latitude': lat,
       'longitude': lng,
+      'deviceId': deviceId,
+      'thresholdFarM': thresholds.farM,
+      'thresholdMidM': thresholds.midM,
+      'thresholdNearM': thresholds.nearM,
     });
 
     // SORUN 3 EK GÜVENCESİ: startTracking kaybolursa diye 1s sonra bir de sync gönder.
@@ -737,6 +891,10 @@ class _MapPageState extends State<MapPage> {
         'name': name,
         'latitude': lat,
         'longitude': lng,
+        'deviceId': deviceId,
+        'thresholdFarM': thresholds.farM,
+        'thresholdMidM': thresholds.midM,
+        'thresholdNearM': thresholds.nearM,
       });
     });
 
@@ -843,6 +1001,39 @@ class _MapPageState extends State<MapPage> {
                     ),
                   ),
 
+                  // Favori hedefler — sola kaydırarak gezilebilen hızlı seçim şeridi.
+                  // İlk çip her zaman "Favori Ekle"dir; mevcut favoriler onun yanında sıralanır.
+                  if (_suggestions.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: SizedBox(
+                        height: 34,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: _favorites.length + 1,
+                          separatorBuilder: (_, _) => const SizedBox(width: 8),
+                          itemBuilder: (context, index) {
+                            if (index == 0) {
+                              return ActionChip(
+                                avatar: const Icon(Icons.add_rounded, size: 16, color: AppColors.neonOrange),
+                                label: const Text('Favori Ekle', style: TextStyle(fontSize: 12)),
+                                backgroundColor: theme.cardTheme.color?.withOpacity(0.92),
+                                side: BorderSide(color: AppColors.neonOrange.withOpacity(0.4)),
+                                onPressed: _saveCurrentAsFavorite,
+                              );
+                            }
+                            final favorite = _favorites[index - 1];
+                            return ActionChip(
+                              avatar: const Icon(Icons.star_rounded, size: 16, color: AppColors.neonOrange),
+                              label: Text(favorite.name, style: const TextStyle(fontSize: 12)),
+                              backgroundColor: theme.cardTheme.color?.withOpacity(0.92),
+                              onPressed: () => _selectFavorite(favorite),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+
                   // Öneri listesi
                   if (_suggestions.isNotEmpty)
                     Container(
@@ -895,7 +1086,7 @@ class _MapPageState extends State<MapPage> {
                             subtitle: Text(
                               secondary,
                               style: TextStyle(
-                                  color: AppColors.textGrey, fontSize: 12),
+                                  color: AppColors.textMuted, fontSize: 12),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -942,7 +1133,7 @@ class _MapPageState extends State<MapPage> {
                               const Text(
                                 'Varış Noktası',
                                 style: TextStyle(
-                                    color: AppColors.textGrey, fontSize: 12),
+                                    color: AppColors.textMuted, fontSize: 12),
                               ),
                               const SizedBox(height: 4),
                               Text(
@@ -957,6 +1148,12 @@ class _MapPageState extends State<MapPage> {
                             ],
                           ),
                         ),
+                        if (_searchController.text.isNotEmpty)
+                          IconButton(
+                            tooltip: 'Favorilere Ekle',
+                            icon: const Icon(Icons.star_border_rounded, color: AppColors.neonOrange),
+                            onPressed: _saveCurrentAsFavorite,
+                          ),
                       ],
                     ),
 

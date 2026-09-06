@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../widgets/neon_button.dart';
+import '../widgets/grain_overlay.dart';
 import 'map_page.dart';
+import 'settings_page.dart';
+import 'history_page.dart';
 
 class HomePage extends StatelessWidget {
-  const HomePage({Key? key}) : super(key: key);
+  const HomePage({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +42,36 @@ class HomePage extends StatelessWidget {
               ),
             ),
           ),
-          
+
+          const GrainOverlay(),
+
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8, right: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  IconButton(
+                    tooltip: 'Geçmiş Rotalar',
+                    icon: const Icon(Icons.history_rounded, color: AppColors.textSecondary),
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const HistoryPage()),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Alarm Eşikleri',
+                    icon: const Icon(Icons.tune_rounded, color: AppColors.textSecondary),
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const SettingsPage()),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 30),
@@ -47,26 +79,26 @@ class HomePage extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const Spacer(),
-                  // Premium Icon / Visual Branding
+                  // Premium Logo / Visual Branding
                   Center(
                     child: Container(
-                      width: 140,
-                      height: 140,
+                      width: 180,
+                      height: 180,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        gradient: AppColors.neonBlueCyan,
                         boxShadow: [
                           BoxShadow(
-                            color: AppColors.neonBlue.withOpacity(0.3),
-                            blurRadius: 30,
-                            offset: const Offset(0, 10),
+                            color: AppColors.neonBlue.withValues(alpha: 0.3),
+                            blurRadius: 40,
+                            offset: const Offset(0, 15),
                           ),
                         ],
                       ),
-                      child: const Icon(
-                        Icons.notifications_active,
-                        color: Colors.white,
-                        size: 70,
+                      child: ClipOval(
+                        child: Image.asset(
+                          'assets/logo.png',
+                          fit: BoxFit.cover,
+                        ),
                       ),
                     ),
                   ),
@@ -75,8 +107,8 @@ class HomePage extends StatelessWidget {
                     'WakeMeUp',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.headlineMedium?.copyWith(
-                      letterSpacing: 1.5,
-                      fontWeight: FontWeight.w900,
+                      fontSize: 30,
+                      letterSpacing: 0.8,
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -84,9 +116,9 @@ class HomePage extends StatelessWidget {
                     'Rotanızı belirleyin, anlık takiplerinizi yapın ve yaklaştığınızdan haberdar olun.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: AppColors.textGrey,
-                      fontSize: 16,
-                      height: 1.4,
+                      color: AppColors.textSecondary,
+                      fontSize: 15,
+                      height: 1.65,
                     ),
                   ),
                   const Spacer(),
@@ -112,6 +144,12 @@ class HomePage extends StatelessWidget {
                         ),
                       );
                     },
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Devam etmek için konum izni gereklidir',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 12),
                   ),
                   const SizedBox(height: 20),
                 ],

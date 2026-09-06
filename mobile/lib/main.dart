@@ -20,6 +20,9 @@ void main() async {
 
   // Initialize Services
   await HiveService.init();
+  // Cihaz kimliği burada, tek bir yerde üretilir/okunur — böylece arka plan
+  // izolatının Hive'a eşzamanlı yazması gerekmez (bkz. HiveService.getOrCreateDeviceId).
+  await HiveService.getOrCreateDeviceId();
   await NotificationService.init();
   await MyBackgroundService.initializeService();
 
@@ -34,9 +37,8 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Geofence Smart Alarm',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
-      themeMode: ThemeMode.dark, // Defaulting to Dark Mode for premium neon visual effect
+      // Uygulama kimliği koyu/neon temaya göre tasarlandı; açık tema desteklenmiyor.
+      theme: AppTheme.darkTheme,
       home: const HomePage(),
     );
   }

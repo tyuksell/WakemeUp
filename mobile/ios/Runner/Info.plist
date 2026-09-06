@@ -16,9 +16,30 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>WakeMeUp</string>
-	<!-- Konum izni: yalnizca uygulama acikken (WhenInUse). Always izni istenmez. -->
+	<!-- Konum izinleri: WakeMeUp'ın asıl işlevi (ekran kilitliyken/uygulama
+	     arka plandayken hedefe yaklaşınca alarm çalması) yalnızca "Her Zaman
+	     İzin Ver" (Always) izniyle çalışır. iOS önce "Uygulamayı Kullanırken"
+	     iznini gösterir; uygulama daha sonra Always'e yükseltme isteyebilir
+	     (bkz. map_page.dart _ensureReliableBackgroundTracking). Bu yüzden
+	     hem WhenInUse hem AlwaysAndWhenInUse açıklaması gereklidir. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>WakeMeUp, rotanizi takip edebilmek icin uygulamayi kullanirken konumunuza erisir. Konum bilgisi arka planda paylasilmaz.</string>
+	<string>WakeMeUp, seçtiğiniz hedefe olan mesafenizi hesaplayabilmek için konumunuza erişir.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>WakeMeUp, ekranınız kilitliyken veya uygulama arka plandayken bile hedefe yaklaştığınızda alarm çalabilmek için konumunuza arka planda erişir. Bu izin olmadan alarm yalnızca uygulama ekranda açıkken tetiklenir.</string>
+	<!-- location: arka planda konum güncellemesi için zorunlu.
+	     audio + fetch: `alarm` paketinin STAGE_NEAR/varış anlarında sessiz
+	     moddayken bile duyulan gerçek alarm sesini arka planda çalabilmesi
+	     ve alarm durumunu periyodik kontrol edebilmesi için gereklidir. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>audio</string>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.gdelataillade.fetch</string>
+	</array>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

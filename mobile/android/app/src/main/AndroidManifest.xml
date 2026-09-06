@@ -10,6 +10,15 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- RECEIVE_BOOT_COMPLETED kaldırıldı: cihaz açılışında servis otomatik başlamasın -->
+    <!-- Aşağıdakiler `alarm` paketi için gerekli: STAGE_NEAR/varış anlarında
+         sessiz modda/Rahatsız Etmeyin altında bile duyulan, ekranı uyandıran
+         gerçek "çalar saat" alarmı (bkz. notification_service.dart ringAlarm). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <application
         android:label="WakeMeUp"
         android:name="${applicationName}"

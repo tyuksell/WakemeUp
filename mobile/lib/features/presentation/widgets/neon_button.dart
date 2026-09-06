@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../../../../core/theme/app_theme.dart';
 
 class NeonButton extends StatefulWidget {
   final String text;
@@ -52,12 +53,7 @@ class _NeonButtonState extends State<NeonButton> with SingleTickerProviderStateM
           alignment: Alignment.center,
           child: Text(
             widget.text,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.2,
-            ),
+            style: AppTheme.sora(color: Colors.white, fontSize: 16, letterSpacing: 1.3),
           ),
         ),
       ),
