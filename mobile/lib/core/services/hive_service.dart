@@ -31,6 +31,62 @@ class FavoriteDestination {
       );
 }
 
+/// Bir takip oturumunun geçmiş kaydı. Sunucudan bağımsız olarak, tamamen
+/// cihazın kendi hafızasında (Hive) tutulur; böylece backend'in ücretsiz
+/// katmanı (Render) yeniden başladığında ya da internet olmadığında geçmiş
+/// kaybolmaz. [id], oturum başlatılırken üretilen bir UUID'dir — backend
+/// route id'siyle karışmaması için ayrıdır (offline rotalar sabit bir
+/// route id paylaşır).
+class RouteHistoryEntry {
+  final String id;
+  final String destinationName;
+  final double lat;
+  final double lng;
+  final String status;
+  final bool isMuted;
+  final DateTime createdAt;
+
+  const RouteHistoryEntry({
+    required this.id,
+    required this.destinationName,
+    required this.lat,
+    required this.lng,
+    required this.status,
+    required this.isMuted,
+    required this.createdAt,
+  });
+
+  RouteHistoryEntry copyWith({String? status, bool? isMuted}) => RouteHistoryEntry(
+        id: id,
+        destinationName: destinationName,
+        lat: lat,
+        lng: lng,
+        status: status ?? this.status,
+        isMuted: isMuted ?? this.isMuted,
+        createdAt: createdAt,
+      );
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'destinationName': destinationName,
+        'lat': lat,
+        'lng': lng,
+        'status': status,
+        'isMuted': isMuted,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory RouteHistoryEntry.fromMap(Map map) => RouteHistoryEntry(
+        id: map['id'] as String,
+        destinationName: map['destinationName'] as String? ?? 'Hedef',
+        lat: (map['lat'] as num?)?.toDouble() ?? 0.0,
+        lng: (map['lng'] as num?)?.toDouble() ?? 0.0,
+        status: map['status'] as String? ?? 'PENDING',
+        isMuted: map['isMuted'] as bool? ?? false,
+        createdAt: DateTime.tryParse(map['createdAt'] as String? ?? '') ?? DateTime.now(),
+      );
+}
+
 class HiveService {
   static const String boxName = 'geofence_alarm_box';
 
@@ -53,6 +109,15 @@ class HiveService {
 
   static const String keyFavorites = 'favorites';
   static const int maxFavorites = 8;
+
+  static const String keyRouteHistory = 'routeHistory';
+  static const String keyActiveHistoryId = 'activeHistoryId';
+  static const int maxHistoryEntries = 50;
+
+  static const String keyAlarmVolume = 'alarmVolume';
+  static const String keyAlarmVibrate = 'alarmVibrate';
+  static const double defaultAlarmVolume = 1.0;
+  static const bool defaultAlarmVibrate = true;
 
   // Initialize Hive
   static Future<void> init() async {
@@ -237,5 +302,92 @@ class HiveService {
   static Future<void> clearAll() async {
     final box = await openBox();
     await box.clear();
+  }
+
+  // ── Geçmiş Rotalar (cihazda yerel olarak saklanır) ──────────────
+  static Future<void> setActiveHistoryId(String id) async {
+    final box = await openBox();
+    await box.put(keyActiveHistoryId, id);
+  }
+
+  static Future<String?> getActiveHistoryId() async {
+    final box = await openBox();
+    return box.get(keyActiveHistoryId);
+  }
+
+  static Future<List<RouteHistoryEntry>> getHistory() async {
+    final box = await openBox();
+    final List raw = box.get(keyRouteHistory, defaultValue: const []);
+    return raw
+        .whereType<Map>()
+        .map((m) => RouteHistoryEntry.fromMap(m))
+        .toList(growable: false);
+  }
+
+  static Future<void> addHistoryEntry(RouteHistoryEntry entry) async {
+    final box = await openBox();
+    final history = await getHistory();
+    // Yeni kayıt en başa eklenir (en yeniden en eskiye sıralama).
+    final updated = [entry, ...history].take(maxHistoryEntries).toList();
+    await box.put(keyRouteHistory, updated.map((e) => e.toMap()).toList());
+  }
+
+  static Future<void> updateHistoryEntryStatus(
+    String id, {
+    required String status,
+    bool? isMuted,
+  }) async {
+    final box = await openBox();
+    final history = await getHistory();
+    final updated = history
+        .map((e) => e.id == id ? e.copyWith(status: status, isMuted: isMuted) : e)
+        .toList();
+    await box.put(keyRouteHistory, updated.map((e) => e.toMap()).toList());
+  }
+
+  /// Yeni bir takip oturumu başlarken, hâlâ "ACTIVE" görünen eski geçmiş
+  /// kayıtlarını "Susturuldu" olarak kapatır. Backend de aynı şeyi
+  /// (aynı cihazın önceki aktif rotasını MUTED yapar) kendi tarafında
+  /// yaptığından, yerel geçmiş sonsuza dek "Takip Ediliyor" göstermesin.
+  static Future<void> closeStaleActiveHistoryEntries() async {
+    final box = await openBox();
+    final history = await getHistory();
+    final updated = history
+        .map((e) => e.status == 'ACTIVE' ? e.copyWith(status: 'MUTED', isMuted: true) : e)
+        .toList();
+    await box.put(keyRouteHistory, updated.map((e) => e.toMap()).toList());
+  }
+
+  static Future<void> removeHistoryEntry(String id) async {
+    final box = await openBox();
+    final history = await getHistory();
+    final updated = history.where((e) => e.id != id).toList();
+    await box.put(keyRouteHistory, updated.map((e) => e.toMap()).toList());
+  }
+
+  static Future<void> clearHistory() async {
+    final box = await openBox();
+    await box.put(keyRouteHistory, <Map>[]);
+  }
+
+  // ── Alarm Sesi ve Titreşim ───────────────────────────────────────
+  static Future<double> getAlarmVolume() async {
+    final box = await openBox();
+    return box.get(keyAlarmVolume, defaultValue: defaultAlarmVolume);
+  }
+
+  static Future<void> setAlarmVolume(double volume) async {
+    final box = await openBox();
+    await box.put(keyAlarmVolume, volume.clamp(0.1, 1.0));
+  }
+
+  static Future<bool> getAlarmVibrate() async {
+    final box = await openBox();
+    return box.get(keyAlarmVibrate, defaultValue: defaultAlarmVibrate);
+  }
+
+  static Future<void> setAlarmVibrate(bool vibrate) async {
+    final box = await openBox();
+    await box.put(keyAlarmVibrate, vibrate);
   }
 }

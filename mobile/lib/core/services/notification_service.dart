@@ -1,6 +1,7 @@
 import 'package:alarm/alarm.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'hive_service.dart';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _notificationsPlugin =
@@ -128,6 +129,13 @@ class NotificationService {
     required String title,
     required String body,
   }) async {
+    // Kullanıcının Ayarlar ekranından seçtiği ses düzeyi ve titreşim tercihi.
+    // Bu fonksiyon arka plan izolatından da çağrıldığından burada okunuyor
+    // (yalnızca okuma; HiveService'in diğer arka plan okumalarıyla aynı
+    // güvenli örüntü — bkz. background_service.dart).
+    final double volume = await HiveService.getAlarmVolume();
+    final bool vibrate = await HiveService.getAlarmVibrate();
+
     await Alarm.stopAll();
     await Alarm.set(
       alarmSettings: AlarmSettings(
@@ -136,14 +144,14 @@ class NotificationService {
         // ileri bir tarihe planlanan bir "alarm kur" değildir.
         dateTime: DateTime.now().add(const Duration(milliseconds: 300)),
         loopAudio: true,
-        vibrate: true,
+        vibrate: vibrate,
         androidFullScreenIntent: true,
         // Uygulama arka planda öldürülse bile bu anlık alarmın tekrar
         // kurulacağı bir "gelecek alarm" olmadığından kapalı; native servis
         // zaten uygulama öldürüldüğünde alarmı durdurur.
         warningNotificationOnKill: false,
         volumeSettings: VolumeSettings.fade(
-          volume: 1.0,
+          volume: volume,
           fadeDuration: const Duration(seconds: 8),
           volumeEnforced: true,
         ),

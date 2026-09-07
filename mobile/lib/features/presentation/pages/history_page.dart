@@ -1,33 +1,10 @@
-import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/services/hive_service.dart';
-import '../../../../core/services/background_service.dart';
+import '../../../../core/services/route_launcher.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/grain_overlay.dart';
-
-class _HistoryEntry {
-  final String destinationName;
-  final String status;
-  final bool isMuted;
-  final DateTime createdAt;
-
-  _HistoryEntry({
-    required this.destinationName,
-    required this.status,
-    required this.isMuted,
-    required this.createdAt,
-  });
-
-  factory _HistoryEntry.fromJson(Map<String, dynamic> json) => _HistoryEntry(
-        destinationName: json['destination_name'] as String? ?? 'Hedef',
-        status: json['status'] as String? ?? 'PENDING',
-        isMuted: json['is_muted'] as bool? ?? false,
-        createdAt: DateTime.tryParse(json['created_at'] as String? ?? '')?.toLocal() ?? DateTime.now(),
-      );
-}
+import '../widgets/center_toast.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -38,15 +15,11 @@ class HistoryPage extends StatefulWidget {
 
 class _HistoryPageState extends State<HistoryPage> {
   bool _isLoading = true;
-  String? _error;
-  List<_HistoryEntry> _entries = const [];
+  List<RouteHistoryEntry> _entries = const [];
 
-  /// SORUN 6 DÜZELTMESİ: Render'ın ücretsiz katmanı 15 dakika hareketsizlikten
-  /// sonra uykuya geçer; ilk isteğe cevap 30-50sn gecikebilir. İlk deneme kısa
-  /// zaman aşımıyla (8sn) başarısız olursa bunu "internet yok" gibi göstermek
-  /// yanıltıcıdır — kullanıcıya sunucunun uyanmakta olduğunu belirtip daha
-  /// uzun bir zaman aşımıyla bir kez daha deneriz.
-  bool _isWakingServer = false;
+  /// Şu an "tekrar başlat" ile yeniden başlatılmakta olan kaydın id'si —
+  /// yalnızca o satırda küçük bir yükleniyor göstergesi için kullanılır.
+  String? _launchingId;
 
   @override
   void initState() {
@@ -54,66 +27,81 @@ class _HistoryPageState extends State<HistoryPage> {
     _load();
   }
 
-  Future<void> _load({bool isRetry = false}) async {
+  Future<void> _load() async {
+    setState(() => _isLoading = true);
+    // Geçmiş, sunucudan değil cihazın kendi hafızasından (Hive) okunur —
+    // böylece backend'in ücretsiz katmanı uykuya geçse veya internet
+    // olmasa bile geçmiş rotalar kaybolmaz.
+    final entries = await HiveService.getHistory();
+    if (!mounted) return;
     setState(() {
-      _isLoading = true;
-      _error = null;
-      if (!isRetry) _isWakingServer = false;
+      _entries = entries;
+      _isLoading = false;
     });
-    try {
-      final deviceId = await HiveService.getOrCreateDeviceId();
-      final response = await http.get(
-        Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/'),
-        headers: {'X-Device-Id': deviceId},
-      ).timeout(Duration(seconds: isRetry ? 45 : 8));
-
-      if (response.statusCode == 200) {
-        final List raw = jsonDecode(response.body) as List;
-        setState(() {
-          _entries = raw
-              .whereType<Map<String, dynamic>>()
-              .map(_HistoryEntry.fromJson)
-              .toList(growable: false);
-          _isLoading = false;
-          _isWakingServer = false;
-        });
-      } else {
-        setState(() {
-          _error = 'Geçmiş yüklenemedi (${response.statusCode}).';
-          _isLoading = false;
-          _isWakingServer = false;
-        });
-      }
-    } on TimeoutException {
-      if (!isRetry) {
-        // İlk deneme zaman aşımına uğradı: bu genelde soğuk başlangıç
-        // (cold start) belirtisidir, gerçek bağlantı sorunundan çok daha
-        // olasıdır. Kullanıcıyı bilgilendirip daha uzun zaman aşımıyla
-        // tek seferlik bir retry yapıyoruz.
-        setState(() => _isWakingServer = true);
-        await _load(isRetry: true);
-      } else if (mounted) {
-        setState(() {
-          _error = 'Sunucuya ulaşılamadı. Lütfen birazdan tekrar deneyin.';
-          _isLoading = false;
-          _isWakingServer = false;
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = 'İnternet bağlantısı olmadan geçmiş rotalar görüntülenemez.';
-        _isLoading = false;
-        _isWakingServer = false;
-      });
-    }
   }
 
-  ({Color color, String label}) _statusVisual(_HistoryEntry entry) {
+  Future<void> _deleteEntry(RouteHistoryEntry entry) async {
+    final removed = entry;
+    final removedIndex = _entries.indexOf(entry);
+    setState(() => _entries = _entries.where((e) => e.id != entry.id).toList());
+    await HiveService.removeHistoryEntry(entry.id);
+    if (!mounted) return;
+    CenterToast.show(
+      context,
+      message: '"${removed.destinationName}" geçmişten silindi.',
+      type: ToastType.error,
+      actionLabel: 'GERİ AL',
+      onAction: () async {
+        final restored = [..._entries];
+        final insertAt = removedIndex.clamp(0, restored.length);
+        restored.insert(insertAt, removed);
+        setState(() => _entries = restored);
+        await HiveService.addHistoryEntry(removed);
+      },
+    );
+  }
+
+  /// Bu geçmiş kaydındaki hedefi aynen kullanarak yeni bir takip oturumu
+  /// başlatır — map_page.dart'taki "Konumu Onayla ve Başlat" ile birebir
+  /// aynı akışı (RouteLauncher) izler.
+  Future<void> _restartRoute(RouteHistoryEntry entry) async {
+    setState(() => _launchingId = entry.id);
+    await RouteLauncher.launch(
+      context: context,
+      destName: entry.destinationName,
+      lat: entry.lat,
+      lng: entry.lng,
+    );
+    if (mounted) setState(() => _launchingId = null);
+  }
+
+  Future<void> _confirmClearAll() async {
+    if (_entries.isEmpty) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Tüm Geçmişi Sil'),
+        content: const Text('Tüm rota geçmişiniz kalıcı olarak silinecek. Emin misiniz?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('İptal')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Tümünü Sil', style: TextStyle(color: AppColors.neonPink)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await HiveService.clearHistory();
+    if (!mounted) return;
+    setState(() => _entries = const []);
+  }
+
+  ({Color color, String label}) _statusVisual(RouteHistoryEntry entry) {
     switch (entry.status) {
       case 'ARRIVED':
-        // Not: Backend bu durumu gerçek varışta (5m) değil, "yakın" eşiğinde
-        // (varsayılan 250m, kullanıcı tarafından ayarlanabilir) set ediyor —
+        // Not: Bu durum gerçek varışta (5m) değil, "yakın" eşiğinde
+        // (varsayılan 250m, kullanıcı tarafından ayarlanabilir) set edilir —
         // bu yüzden etiket "yaklaşıldı" diyor, "vardı" değil.
         return (color: AppColors.neonCyan, label: 'Hedefe Yaklaşıldı');
       case 'ACTIVE':
@@ -137,6 +125,14 @@ class _HistoryPageState extends State<HistoryPage> {
         title: const Text('Geçmiş Rotalar'),
         backgroundColor: Colors.transparent,
         elevation: 0,
+        actions: [
+          if (_entries.isNotEmpty)
+            IconButton(
+              tooltip: 'Tümünü Temizle',
+              icon: const Icon(Icons.delete_sweep_outlined),
+              onPressed: _confirmClearAll,
+            ),
+        ],
       ),
       body: Stack(
         children: [
@@ -154,36 +150,7 @@ class _HistoryPageState extends State<HistoryPage> {
 
   Widget _buildBody() {
     if (_isLoading) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            if (_isWakingServer) ...[
-              const SizedBox(height: 16),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 32),
-                child: Text(
-                  'Sunucu uyanıyor, tekrar deneniyor...',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: AppColors.textGrey, fontSize: 13),
-                ),
-              ),
-            ],
-          ],
-        ),
-      );
-    }
-    if (_error != null) {
-      return ListView(
-        padding: const EdgeInsets.all(24),
-        children: [
-          const SizedBox(height: 80),
-          Icon(Icons.wifi_off_rounded, color: AppColors.textGrey, size: 40),
-          const SizedBox(height: 16),
-          Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: AppColors.textGrey)),
-        ],
-      );
+      return const Center(child: CircularProgressIndicator());
     }
     if (_entries.isEmpty) {
       return ListView(
@@ -207,37 +174,83 @@ class _HistoryPageState extends State<HistoryPage> {
       itemBuilder: (context, index) {
         final entry = _entries[index];
         final visual = _statusVisual(entry);
-        return GlassCard(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
-                margin: const EdgeInsets.only(right: 14),
-                decoration: BoxDecoration(color: visual.color, shape: BoxShape.circle),
-              ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      entry.destinationName,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(_formatDate(entry.createdAt),
-                        style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
-                  ],
+        return Dismissible(
+          key: ValueKey(entry.id),
+          direction: DismissDirection.endToStart,
+          background: Container(
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            decoration: BoxDecoration(
+              color: AppColors.neonPink.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Icon(Icons.delete_outline_rounded, color: AppColors.neonPink),
+          ),
+          onDismissed: (_) => _deleteEntry(entry),
+          child: GlassCard(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  margin: const EdgeInsets.only(right: 14),
+                  decoration: BoxDecoration(color: visual.color, shape: BoxShape.circle),
                 ),
-              ),
-              Text(
-                visual.label,
-                style: TextStyle(color: visual.color, fontSize: 12, fontWeight: FontWeight.w600),
-              ),
-            ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.destinationName,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Text(_formatDate(entry.createdAt),
+                              style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              visual.label,
+                              style: TextStyle(color: visual.color, fontSize: 12, fontWeight: FontWeight.w600),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                if (_launchingId == entry.id)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                else
+                  IconButton(
+                    tooltip: 'Bu Rotayı Tekrar Başlat',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    icon: const Icon(Icons.replay_rounded, size: 20, color: AppColors.neonCyan),
+                    onPressed: _launchingId == null ? () => _restartRoute(entry) : null,
+                  ),
+                IconButton(
+                  tooltip: 'Sil',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.textGrey),
+                  onPressed: () => _deleteEntry(entry),
+                ),
+              ],
+            ),
           ),
         );
       },

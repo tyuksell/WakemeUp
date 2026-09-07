@@ -9,18 +9,13 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:uuid/uuid.dart';
-import 'package:permission_handler/permission_handler.dart' as ph;
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/services/hive_service.dart';
-import '../../../../core/services/background_service.dart';
-import '../../../../core/services/notification_service.dart';
+import '../../../../core/services/route_launcher.dart';
 import '../../../../core/utils/distance_calculator.dart';
-import '../../../../core/utils/constants.dart';
 import '../widgets/neon_button.dart';
-import 'tracking_page.dart';
+import '../widgets/center_toast.dart';
 
 /// Debounce süresi: 350ms — kullanıcı yazmayı bıraktıktan sonra istek atılır.
 const _kAutocompleteDebounceDuration = Duration(milliseconds: 350);
@@ -520,23 +515,27 @@ class _MapPageState extends State<MapPage> {
         final double lng = (coords[0] as num).toDouble();
         final double lat = (coords[1] as num).toDouble();
 
-        // Tam adresi properties'ten al (varsa)
+        // Arama kutusunda yer adı (ör. "Altıntaş Kuyumculuk") gösterilmeli,
+        // tam adres değil — bu yüzden önce suggestion/retrieve'in "name" alanı,
+        // sonra ilk seçimde gösterilen displayName tercih edilir; tam adres
+        // yalnızca hiçbiri yoksa (ör. düz bir sokak noktası) son çare olarak kullanılır.
         final props = feature['properties'] as Map<String, dynamic>? ?? {};
-        final String fullAddress = props['full_address'] as String? ??
-            props['name'] as String? ??
-            displayName;
+        final String resultName = props['name'] as String? ??
+            (displayName.isNotEmpty ? displayName : null) ??
+            props['full_address'] as String? ??
+            '';
 
         setState(() {
           _selectedLat = lat;
           _selectedLng = lng;
-          _searchController.text = fullAddress;
+          _searchController.text = resultName;
           _isLoading = false;
           _previewDistanceMeters = null; // Yeni hedef → eski mesafeyi sıfırla
           // Retrieve tamamlandı → yeni oturum başlat
           _sessionToken = _uuid.v4();
         });
 
-        debugPrint('[MapPage] Retrieve tamamlandı: $fullAddress → lat=$lat, lng=$lng');
+        debugPrint('[MapPage] Retrieve tamamlandı: $resultName → lat=$lat, lng=$lng');
         debugPrint('[MapPage] Yeni session token: $_sessionToken');
 
         _mapboxMap?.flyTo(
@@ -633,313 +632,39 @@ class _MapPageState extends State<MapPage> {
   }
 
   // ──────────────────────────────────────────────────────
-  //  İNTERNET KONTROLÜ
-  // ──────────────────────────────────────────────────────
-
-  Future<bool> _hasActualInternet() async {
-    try {
-      final connectivityResult = await Connectivity().checkConnectivity();
-      if (connectivityResult.contains(ConnectivityResult.none)) return false;
-
-      final String host = Uri.parse(MyBackgroundService.serverBaseUrl).host;
-      final result = await InternetAddress.lookup(host.isEmpty ? 'mapbox.com' : host)
-          .timeout(const Duration(seconds: 4));
-
-      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
-    } catch (_) {
-      try {
-        final result =
-            await InternetAddress.lookup('mapbox.com').timeout(const Duration(seconds: 3));
-        return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
-      } catch (__) {
-        return false;
-      }
-    }
-  }
-
-  // ──────────────────────────────────────────────────────
   //  KONUM ONAYLAMA / TAKİP BAŞLATMA
   // ──────────────────────────────────────────────────────
 
   Future<void> _confirmLocation() async {
     setState(() => _isLoading = true);
 
-    // Bildirim izni
-    await NotificationService.requestPermissions();
-
-    // Konum izni + platforma özgü arka plan takip güvencesi (iOS "Always",
-    // Android pil optimizasyonu istisnası). Kullanıcı reddederse yine de
-    // devam edilir; ancak arka plan takibi güvenilir çalışmayabilir.
-    await _ensureReliableBackgroundTracking();
-
-    final bool isOnline = await _hasActualInternet();
     final String destName = _searchController.text.isNotEmpty
         ? _searchController.text
         : 'Hedef Koordinat: (${_selectedLat.toStringAsFixed(4)}, ${_selectedLng.toStringAsFixed(4)})';
 
-    if (isOnline) {
-      final String deviceId = await HiveService.getOrCreateDeviceId();
-      final AlarmThresholds thresholds = await HiveService.getThresholds();
-      final Uri uri = Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/');
-      final Map<String, String> headers = {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-        'X-Device-Id': deviceId,
-      };
-      final String body = jsonEncode({
-        'destination_name': destName,
-        'dest_latitude': _selectedLat,
-        'dest_longitude': _selectedLng,
-        'threshold_far_m': thresholds.farM,
-        'threshold_mid_m': thresholds.midM,
-        'threshold_near_m': thresholds.nearM,
-      });
-
-      http.Response? response;
-      try {
-        response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 8));
-      } on TimeoutException {
-        // SORUN 6 BENZERİ: Render'ın ücretsiz katmanı 15 dakika
-        // hareketsizlikten sonra uyur; ilk istek 30-50sn sürebilir. Bunu
-        // gerçek bir bağlantı hatası/"offline" sanıp kullanıcıya yanlışlıkla
-        // "offline devam edilsin mi?" diye sormak yerine, sunucunun
-        // uyandığını bildirip daha uzun bir zaman aşımıyla bir kez daha
-        // deniyoruz (bkz. history_page.dart'taki aynı düzeltme).
-        if (mounted) _showSuccessSnackBar('Sunucu uyanıyor, tekrar deneniyor...');
-        try {
-          response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 45));
-        } catch (e) {
-          response = null;
-        }
-      } catch (e) {
-        response = null;
-      }
-
-      if (response != null && response.statusCode == 201) {
-        final data = jsonDecode(response.body);
-        final int routeId = data['id'];
-
-        await HiveService.setTrackingState(
-          routeId: routeId,
-          name: destName,
-          lat: _selectedLat,
-          lng: _selectedLng,
-        );
-
-        await _startTracking();
-      } else if (response != null) {
-        _showErrorSnackBar('Backend sunucusu hata verdi. Durum: ${response.statusCode}');
-        await _confirmOfflineFallback(destName, 'Sunucuya bağlanılamadı, offline devam edilsin mi?');
-      } else {
-        await _confirmOfflineFallback(destName, 'İşlem sırasında bir hata oluştu. Offline devam edilsin mi?');
-      }
-    } else {
-      _showSuccessSnackBar('İnternet bulunamadı. Offline-First takip modu başlatıldı.');
-      await _startOfflineTracking(destName);
-    }
+    // Bildirim/izin akışı, backend'e kayıt, offline düşüş ve arka plan
+    // servisini başlatma — bu ortak akış artık RouteLauncher'da; böylece
+    // history_page.dart da aynı mantıkla bir rotayı tekrar başlatabiliyor.
+    await RouteLauncher.launch(
+      context: context,
+      destName: destName,
+      lat: _selectedLat,
+      lng: _selectedLng,
+    );
 
     if (mounted) setState(() => _isLoading = false);
   }
 
-  /// Platforma özgü, arka planda güvenilir konum takibi için gereken izin/ayar
-  /// akışını yürütür. Her iki platformda da kullanıcı reddederse akış
-  /// engellenmez; sadece takip arka planda düzensiz çalışabilir.
-  Future<void> _ensureReliableBackgroundTracking() async {
-    // Konum izni (When In Use / Always) — servis başlamadan önce alınmalı.
-    geo.LocationPermission locPerm = await geo.Geolocator.checkPermission();
-    if (locPerm == geo.LocationPermission.denied) {
-      locPerm = await geo.Geolocator.requestPermission();
-    }
-    if (locPerm == geo.LocationPermission.deniedForever) return;
-
-    if (Platform.isIOS) {
-      // iOS'ta arka planda GPS almak için "Her Zaman İzin Ver" (Always) şart;
-      // "Uygulamayı Kullanırken" (whileInUse) izni ekran kilitlenince veya
-      // uygulama arka plana alınınca konum akışını durdurur. iOS bu izni
-      // ikinci bir sistem isteğiyle (veya kullanıcı Ayarlar'dan) verir.
-      final geo.LocationPermission refreshed = await geo.Geolocator.checkPermission();
-      if (refreshed == geo.LocationPermission.whileInUse && mounted) {
-        final bool? openSettings = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Arka Planda Takip İçin İzin Gerekli'),
-            content: const Text(
-              'WakeMeUp, ekranınız kilitliyken veya uygulama arka plandayken de '
-              'hedefe yaklaştığınızı algılayabilmek için konum iznini "Her Zaman '
-              'İzin Ver" olarak ayarlamanızı gerektirir. Aksi halde alarm yalnızca '
-              'uygulama ekranda açıkken tetiklenir.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Şimdilik Devam Et'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Ayarları Aç'),
-              ),
-            ],
-          ),
-        );
-        if (openSettings == true) {
-          await geo.Geolocator.openAppSettings();
-        }
-      }
-    } else if (Platform.isAndroid) {
-      // Android'de üretici pil optimizasyonları (Xiaomi/Huawei/Samsung vb.)
-      // foreground service'i yine de arka planda öldürebilir. Kullanıcıdan
-      // uygulamayı optimizasyon istisnasına almasını istiyoruz.
-      final ph.PermissionStatus batteryStatus =
-          await ph.Permission.ignoreBatteryOptimizations.status;
-      if (!batteryStatus.isGranted && mounted) {
-        final bool? requestExemption = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Güvenilir Arka Plan Takibi'),
-            content: const Text(
-              'Telefonunuzun pil tasarrufu ayarları, ekran kapalıyken konum '
-              'takibini durdurabilir. Alarmın güvenilir çalışması için WakeMeUp\'ı '
-              'pil optimizasyonundan muaf tutmanızı öneririz.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Şimdilik Geç'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('İzin Ver'),
-              ),
-            ],
-          ),
-        );
-        if (requestExemption == true) {
-          await ph.Permission.ignoreBatteryOptimizations.request();
-        }
-      }
-
-      // `alarm` paketinin STAGE_NEAR/varış anlarında gerçek çalar saat gibi
-      // neredeyse anında tetiklenebilmesi için Android 12+ üzerinde gereken izin.
-      try {
-        final ph.PermissionStatus exactAlarmStatus =
-            await ph.Permission.scheduleExactAlarm.status;
-        if (!exactAlarmStatus.isGranted) {
-          await ph.Permission.scheduleExactAlarm.request();
-        }
-      } catch (_) {
-        // Bu izin tipini desteklemeyen OS sürümlerinde sessizce geç.
-      }
-    }
-  }
-
-  Future<void> _confirmOfflineFallback(String destName, String message) async {
-    final bool? proceed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Bağlantı Sorunu'),
-        content: Text(message),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false), child: const Text('İptal')),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Offline Devam Et')),
-        ],
-      ),
-    );
-    if (proceed == true) await _startOfflineTracking(destName);
-  }
-
-  Future<void> _startOfflineTracking(String destName) async {
-    await HiveService.setTrackingState(
-      routeId: kOfflineRouteId,
-      name: destName,
-      lat: _selectedLat,
-      lng: _selectedLng,
-    );
-    await _startTracking();
-  }
-
-  Future<void> _startTracking() async {
-    final service = FlutterBackgroundService();
-    final alreadyRunning = await service.isRunning();
-    
-    if (alreadyRunning) {
-      // Temiz bellek ve yeni isolate dinleyicileri garanti etmek için mevcut servisi kapatıyoruz.
-      debugPrint('[MapPage] Eski arka plan servisi kapatılıyor...');
-      service.invoke('stopService');
-      // Eski servisin durması ve OS'un kaynakları serbest bırakması için yeterli süre.
-      await Future.delayed(const Duration(milliseconds: 600));
-    }
-
-    await service.startService();
-
-    // SORUN 3 DÜZELTMESİ: 300ms → 800ms
-    // Arka plan izolatının ayağa kalkıp tüm service.on(...).listen() çağrılarını
-    // kaydetmesi için yeterli süre tanınıyor. Düşük sınıf cihazlarda 300ms yetersizdi.
-    await Future.delayed(const Duration(milliseconds: 800));
-
-    // Hive'dan onaylanan hedef bilgilerini oku.
-    final routeId = await HiveService.getActiveRouteId() ?? kOfflineRouteId;
-    final name = await HiveService.getDestName() ?? "Hedef";
-    final lat = await HiveService.getDestLatitude() ?? 0.0;
-    final lng = await HiveService.getDestLongitude() ?? 0.0;
-    final deviceId = await HiveService.getOrCreateDeviceId();
-    final thresholds = await HiveService.getThresholds();
-
-    // Birincil mesaj: startTracking — ilk konum alımını ve tüm state'i initialize eder.
-    service.invoke('startTracking', {
-      'routeId': routeId,
-      'name': name,
-      'latitude': lat,
-      'longitude': lng,
-      'deviceId': deviceId,
-      'thresholdFarM': thresholds.farM,
-      'thresholdMidM': thresholds.midM,
-      'thresholdNearM': thresholds.nearM,
-    });
-
-    // SORUN 3 EK GÜVENCESİ: startTracking kaybolursa diye 1s sonra bir de sync gönder.
-    // sync listener mevcut GPS konumunu anında alıp UI'a iletir.
-    Future.delayed(const Duration(milliseconds: 1000), () {
-      service.invoke('sync', {
-        'routeId': routeId,
-        'name': name,
-        'latitude': lat,
-        'longitude': lng,
-        'deviceId': deviceId,
-        'thresholdFarM': thresholds.farM,
-        'thresholdMidM': thresholds.midM,
-        'thresholdNearM': thresholds.nearM,
-      });
-    });
-
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const TrackingPage()),
-      );
-    }
-  }
-
   // ──────────────────────────────────────────────────────
-  //  SNACKBAR YARDIMCILARI
+  //  UYARI YARDIMCILARI (ekranın ortasında, cam görünümlü toast)
   // ──────────────────────────────────────────────────────
 
   void _showErrorSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(message),
-      backgroundColor: AppColors.neonPink,
-      behavior: SnackBarBehavior.floating,
-    ));
+    CenterToast.show(context, message: message, type: ToastType.error);
   }
 
   void _showSuccessSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(message),
-      backgroundColor: Colors.teal,
-      behavior: SnackBarBehavior.floating,
-    ));
+    CenterToast.show(context, message: message, type: ToastType.success);
   }
 
   // ──────────────────────────────────────────────────────

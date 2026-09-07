@@ -12,6 +12,7 @@ import '../../../../core/utils/constants.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/hold_to_confirm_button.dart';
 import '../widgets/grain_overlay.dart';
+import '../widgets/center_toast.dart';
 
 /// Susturma onaylandıktan sonra, geri alınamaz eylemler (backend'e "bir daha
 /// asla tetikleme" bildirimi, servisi durdurma) uygulanmadan önce kullanıcıya
@@ -180,7 +181,10 @@ class _TrackingPageState extends State<TrackingPage> {
 
           // arrived flag'i arka plan servisinden oku
           final dynamic rawArrived = event['arrived'];
-          if (rawArrived == true) _hasArrived = true;
+          if (rawArrived == true) {
+            if (!_hasArrived) _markHistoryArrived();
+            _hasArrived = true;
+          }
         });
       }
     });
@@ -189,12 +193,30 @@ class _TrackingPageState extends State<TrackingPage> {
       debugPrint('[TrackingPage] Servisten backendMute uyarısı alındı.');
       await HiveService.setIsMuted(true);
       await NotificationService.cancelAll();
+      await _markHistoryMuted();
       if (mounted) {
         setState(() {
           _isMuted = true;
         });
       }
     });
+  }
+
+  /// Varış noktasına ulaşıldığında yerel geçmiş kaydını günceller.
+  Future<void> _markHistoryArrived() async {
+    final historyId = await HiveService.getActiveHistoryId();
+    if (historyId != null) {
+      await HiveService.updateHistoryEntryStatus(historyId, status: 'ARRIVED');
+    }
+  }
+
+  /// Alarm susturulduğunda (kullanıcı ya da backend tarafından) yerel geçmiş
+  /// kaydını günceller.
+  Future<void> _markHistoryMuted() async {
+    final historyId = await HiveService.getActiveHistoryId();
+    if (historyId != null) {
+      await HiveService.updateHistoryEntryStatus(historyId, status: 'MUTED', isMuted: true);
+    }
   }
 
   /// SORUN 3 DÜZELTMESİ (adım 1/2): Kullanıcı düğmeyi 3 saniye basılı tutup
@@ -209,20 +231,13 @@ class _TrackingPageState extends State<TrackingPage> {
     NotificationService.cancelAll();
     setState(() => _mutePending = true);
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: _kMuteUndoWindow,
-        backgroundColor: AppColors.neonPink,
-        behavior: SnackBarBehavior.floating,
-        content: const Text(
-          'Alarm susturuluyor, takip birazdan sonlandırılacak...',
-        ),
-        action: SnackBarAction(
-          label: 'GERİ AL',
-          textColor: Colors.white,
-          onPressed: _cancelPendingMute,
-        ),
-      ),
+    CenterToast.show(
+      context,
+      message: 'Alarm susturuluyor, takip birazdan sonlandırılacak...',
+      type: ToastType.error,
+      duration: _kMuteUndoWindow,
+      actionLabel: 'GERİ AL',
+      onAction: _cancelPendingMute,
     );
 
     _muteUndoTimer = Timer(_kMuteUndoWindow, _finalizeMute);
@@ -247,6 +262,7 @@ class _TrackingPageState extends State<TrackingPage> {
 
     await HiveService.setIsMuted(true);
     await NotificationService.cancelAll();
+    await _markHistoryMuted();
 
     if (mounted) {
       setState(() {
@@ -282,6 +298,19 @@ class _TrackingPageState extends State<TrackingPage> {
   Future<void> _stopTrackingSession() async {
     _muteUndoTimer?.cancel();
     _muteUndoTimer = null;
+
+    // Yalnızca hâlâ "ACTIVE" durumundaysa (yani ne varışa ulaşılmış ne de
+    // susturulmuşsa) geçmişte "İptal Edildi" olarak işaretle — aksi halde
+    // zaten kazanılmış olan ARRIVED/MUTED durumunun üzerine yazılmasın.
+    final historyId = await HiveService.getActiveHistoryId();
+    if (historyId != null) {
+      final history = await HiveService.getHistory();
+      final current = history.where((e) => e.id == historyId);
+      if (current.isNotEmpty && current.first.status == 'ACTIVE') {
+        await HiveService.updateHistoryEntryStatus(historyId, status: 'MUTED', isMuted: false);
+      }
+    }
+
     await HiveService.stopTracking();
     await NotificationService.cancelAll();
     FlutterBackgroundService().invoke('stopService');
@@ -292,13 +321,7 @@ class _TrackingPageState extends State<TrackingPage> {
   }
 
   void _showInfoSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.neonBlue,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    CenterToast.show(context, message: message, type: ToastType.info);
   }
 
   /// Mesafeyi kullanıcı dostu formatta döndürür.
