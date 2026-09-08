@@ -1,13 +1,13 @@
 # WakeMeUp ⏰📍 - Akıllı Seyahat Alarmı ve Geofence Takip Sistemi
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.12+-02569B?style=for-the-badge&logo=flutter&logoColor=white)](https://flutter.dev)
-[![Django](https://img.shields.io/badge/Django-5.2+-092E20?style=for-the-badge&logo=django&logoColor=white)](https://djangoproject.com)
+[![Supabase](https://img.shields.io/badge/Supabase-Edge_Functions-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com)
 [![Mapbox](https://img.shields.io/badge/Mapbox-Maps_SDK-448AFF?style=for-the-badge&logo=mapbox&logoColor=white)](https://mapbox.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](file:///d:/MyProjects/travel/LICENSE)
 
 **WakeMeUp**, toplu taşıma, tren veya uzun yolculuklarda hedefinize yaklaşırken uyuya kalmanızı veya durağı kaçırmanızı engellemek için tasarlanmış akıllı bir coğrafi sınır (Geofencing) alarm ve takip uygulamasıdır. 
 
-Proje, gerçek zamanlı konum takibi yapan modern bir **Flutter** mobil uygulaması ile konum verilerini işleyip mesafeyi doğrulayan bir **Django (REST Framework)** backend servisinden oluşur.
+Proje, gerçek zamanlı konum takibi yapan modern bir **Flutter** mobil uygulaması ile konum verilerini işleyip mesafeyi doğrulayan bir **Supabase Edge Functions** backend servisinden oluşur.
 
 ---
 
@@ -29,12 +29,12 @@ Aşağıdaki şema, mobil cihaz ile backend arasındaki veri akışını ve alar
 
 ```mermaid
 graph TD
-    A[Flutter Mobil Uygulama] -->|1. Konum Güncellemesi /api/routes/:id/update-location/| B(Django REST API)
+    A[Flutter Mobil Uygulama] -->|1. Konum Güncellemesi /routes/:id/update-location| B(Supabase Edge Function)
     B -->|2. Haversine Formülü ile Mesafe Hesabı| C{Mesafe Kontrolü}
     C -->|Mesafe <= 1km / 500m / 250m| D[Alarm Tetikleme Yanıtı]
     C -->|Mesafe > 1km| E[Normal Seyir Yanıtı]
     D -->|3. Local Notification & Alarm Sesi| A
-    A -->|4. Alarmı Kapat /api/routes/:id/mute/| B
+    A -->|4. Alarmı Kapat /routes/:id/mute| B
 ```
 
 ---
@@ -43,10 +43,9 @@ graph TD
 
 ```text
 WakemeUp/
-├── backend/                  # Django REST Framework Backend
-│   ├── geofence_backend/     # Django Proje Ayarları
-│   ├── tracking/             # Konum Takip & Geofence Modülleri (API)
-│   └── manage.py             # Django Yönetim Scripti
+├── supabase/                 # Supabase Backend (Edge Functions + Şema)
+│   └── functions/
+│       └── routes/           # Konum Takip & Geofence Endpoint'leri (Deno/TS)
 ├── mobile/                   # Flutter Mobil İstemci (Client)
 │   ├── lib/                  # Dart Kaynak Kodları
 │   │   ├── core/             # Temalar, Servisler ve Ortak Katmanlar
@@ -60,38 +59,28 @@ WakemeUp/
 
 ## 🛠️ Kurulum ve Başlangıç
 
-### 1. Backend Kurulumu (Django)
+### 1. Backend Kurulumu (Supabase)
 
-Backend tarafını lokalinizde çalıştırmak için aşağıdaki adımları izleyin:
+Backend, Supabase projesi üzerinde Postgres tablosu (`target_route`) ve tek bir Edge
+Function (`supabase/functions/routes`) olarak çalışır. Kendi Supabase projenizde
+çalıştırmak için:
 
 ```bash
-# Backend dizinine geçiş yapın
-cd backend
+# Supabase CLI ile giriş yapın ve projeye bağlanın
+npx supabase login
+npx supabase link --project-ref <PROJECT_REF>
 
-# Sanal ortam oluşturun ve aktif edin
-python -m venv venv
-# Windows için:
-.\venv\Scripts\activate
-# macOS/Linux için:
-source venv/bin/activate
-
-# Gerekli paketleri yükleyin
-pip install -r requirements.txt
-
-# Yerel geliştirmede DEBUG varsayılan olarak kapalıdır (üretimde güvenlik için).
-# Statik dosyaların ve hata sayfalarının doğru çalışması için açın:
-# Windows (PowerShell):
-$env:DEBUG="True"
-# macOS/Linux:
-export DEBUG=True
-
-# Veritabanı geçişlerini (migration) uygulayın
-python manage.py migrate
-
-# Geliştirici sunucusunu başlatın
-python manage.py runserver
+# Edge Function'ı deploy edin (uygulamada hesap sistemi olmadığı için
+# JWT doğrulaması kapalı; sahiplik X-Device-Id başlığı ile kontrol edilir)
+npx supabase functions deploy routes --no-verify-jwt
 ```
-*Varsayılan olarak backend `http://127.0.0.1:8000/` adresinde çalışacaktır.*
+
+`target_route` tablosunun şeması için `supabase/functions/routes/index.ts` içindeki
+alanlara bakın; Supabase Dashboard → SQL Editor üzerinden oluşturabilir ve
+**Row Level Security'yi etkinleştirip politika eklemeden bırakabilirsiniz**
+(tabloya doğrudan erişim yalnızca Edge Function'ın kullandığı `service_role`
+anahtarına açık kalır; istemci `publishable`/`anon` anahtarıyla asla doğrudan
+erişemez).
 
 ### 2. Mobil Uygulama Kurulumu (Flutter)
 
@@ -101,7 +90,9 @@ Mobil uygulamayı çalıştırmadan önce Mapbox erişim anahtarınızı ayarlam
    ```env
    MAPBOX_ACCESS_TOKEN=your_mapbox_public_access_token_here
    ```
-2. Bağımlılıkları yükleyin ve uygulamayı çalıştırın:
+2. `mobile/lib/core/services/background_service.dart` içindeki `serverBaseUrl` ve
+   `supabaseApiKey` sabitlerini kendi Supabase projenizin değerleriyle güncelleyin.
+3. Bağımlılıkları yükleyin ve uygulamayı çalıştırın:
 
 ```bash
 # Mobile dizinine geçiş yapın
@@ -121,10 +112,12 @@ flutter run
 Backend API'si aşağıdaki uç noktaları sağlar. Uygulamada hesap sistemi olmadığından
 sahiplik, her istekte gönderilmesi **zorunlu** olan `X-Device-Id` başlığı ile
 kontrol edilir (mobil istemci bu kimliği ilk açılışta üretip cihazda saklar).
-Başlık eksikse `400`, rota başka bir cihaza aitse `403` döner.
+Ayrıca her istekte Supabase'in `apikey` ve `Authorization: Bearer <publishable key>`
+başlıkları da gönderilmelidir. Başlık eksikse `400`, rota başka bir cihaza aitse
+`403` döner.
 
 ### 1. Rota Oluşturma
-* **URL:** `/api/routes/`
+* **URL:** `/functions/v1/routes`
 * **Metot:** `POST`
 * **İstek Gövdesi (JSON):** `threshold_*` alanları isteğe bağlıdır; gönderilmezse 1km/500m/250m varsayılanları kullanılır. Gönderiliyorsa üçü birden zorunludur ve `far > mid > near > 0` sıralamasında olmalıdır.
   ```json
@@ -139,12 +132,12 @@ Başlık eksikse `400`, rota başka bir cihaza aitse `403` döner.
   ```
 
 ### 2. Geçmiş Rotaları Listeleme
-* **URL:** `/api/routes/`
+* **URL:** `/functions/v1/routes`
 * **Metot:** `GET`
 * **Yanıt Gövdesi (JSON):** İsteği atan cihaza ait rotaların en yeniden en eskiye sıralanmış listesi (en fazla 50 kayıt).
 
 ### 3. Anlık Konum Güncelleme ve Geofence Sorgulama
-* **URL:** `/api/routes/<route_id>/update-location/`
+* **URL:** `/functions/v1/routes/<route_id>/update-location`
 * **Metot:** `POST`
 * **İstek Gövdesi (JSON):**
   ```json
@@ -167,7 +160,7 @@ Başlık eksikse `400`, rota başka bir cihaza aitse `403` döner.
   ```
 
 ### 4. Alarmı Susturma / İptal Etme
-* **URL:** `/api/routes/<route_id>/mute/`
+* **URL:** `/functions/v1/routes/<route_id>/mute`
 * **Metot:** `POST`
 * **Yanıt Gövdesi (JSON):**
   ```json
