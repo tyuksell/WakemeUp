@@ -278,12 +278,8 @@ class _TrackingPageState extends State<TrackingPage> {
       try {
         final deviceId = await HiveService.getOrCreateDeviceId();
         await http.post(
-          Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/$routeId/mute/'),
-          headers: {
-            "Content-Type": "application/json",
-            "ngrok-skip-browser-warning": "true",
-            "X-Device-Id": deviceId,
-          },
+          Uri.parse('${MyBackgroundService.serverBaseUrl}/routes/$routeId/mute'),
+          headers: MyBackgroundService.apiHeaders(deviceId),
         ).timeout(const Duration(seconds: 4));
       } catch (e) {
         // Silent catch for offline capability

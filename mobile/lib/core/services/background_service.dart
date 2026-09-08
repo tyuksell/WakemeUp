@@ -12,8 +12,16 @@ import '../utils/constants.dart';
 
 @pragma('vm:entry-point')
 class MyBackgroundService {
-  // Production URL — Render deployment
-  static const String serverBaseUrl = 'https://wakemeup-fq0i.onrender.com';
+  // Production URL — Supabase Edge Functions
+  static const String serverBaseUrl = 'https://livhwiwziyzzlpsnzqsr.supabase.co/functions/v1';
+  static const String supabaseApiKey = 'sb_publishable_pa0-uZqAaaRUPtILAZHvYQ_85brCyux';
+
+  static Map<String, String> apiHeaders(String deviceId) => {
+        'Content-Type': 'application/json',
+        'apikey': supabaseApiKey,
+        'Authorization': 'Bearer $supabaseApiKey',
+        'X-Device-Id': deviceId,
+      };
 
   // In-memory state for the background isolate to bypass cross-isolate Hive deadlock issues
   static double? _destLat;
@@ -307,11 +315,8 @@ class MyBackgroundService {
     if (_routeId != kOfflineRouteId) {
       try {
         final response = await http.post(
-          Uri.parse('$serverBaseUrl/api/routes/$_routeId/update-location/'),
-          headers: {
-            "Content-Type": "application/json",
-            "X-Device-Id": _deviceId ?? '',
-          },
+          Uri.parse('$serverBaseUrl/routes/$_routeId/update-location'),
+          headers: apiHeaders(_deviceId ?? ''),
           body: jsonEncode({
             "current_latitude": position.latitude,
             "current_longitude": position.longitude,

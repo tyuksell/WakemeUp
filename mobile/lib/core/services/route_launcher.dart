@@ -69,12 +69,8 @@ class RouteLauncher {
     if (isOnline) {
       final String deviceId = await HiveService.getOrCreateDeviceId();
       final AlarmThresholds thresholds = await HiveService.getThresholds();
-      final Uri uri = Uri.parse('${MyBackgroundService.serverBaseUrl}/api/routes/');
-      final Map<String, String> headers = {
-        'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
-        'X-Device-Id': deviceId,
-      };
+      final Uri uri = Uri.parse('${MyBackgroundService.serverBaseUrl}/routes');
+      final Map<String, String> headers = MyBackgroundService.apiHeaders(deviceId);
       final String body = jsonEncode({
         'destination_name': destName,
         'dest_latitude': lat,
@@ -88,16 +84,13 @@ class RouteLauncher {
       try {
         response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 8));
       } on TimeoutException {
-        // Render'ın ücretsiz katmanı 15 dakika hareketsizlikten sonra uyur;
-        // ilk istek 30-50sn sürebilir. Bunu gerçek bir bağlantı hatası/
-        // "offline" sanıp kullanıcıya yanlışlıkla "offline devam edilsin
-        // mi?" diye sormak yerine, sunucunun uyandığını bildirip daha uzun
-        // bir zaman aşımıyla bir kez daha deniyoruz.
+        // Geçici ağ gecikmesi olabilir; kullanıcıya yanlışlıkla "offline devam
+        // edilsin mi?" diye sormak yerine bir kez daha deniyoruz.
         if (context.mounted) {
-          CenterToast.show(context, message: 'Sunucu uyanıyor, tekrar deneniyor...', type: ToastType.info);
+          CenterToast.show(context, message: 'Bağlantı zaman aşımına uğradı, tekrar deneniyor...', type: ToastType.info);
         }
         try {
-          response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 45));
+          response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 15));
         } catch (e) {
           response = null;
         }

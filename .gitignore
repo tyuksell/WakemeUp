@@ -13,3 +13,13 @@ backend/db.sqlite3
 
 # Logs
 *.log
+
+# Build artifacts
+*.apk
+
+# Secrets — never commit
+*.env
+.env.*
+*secret*
+*password*
+supabase/.temp/
