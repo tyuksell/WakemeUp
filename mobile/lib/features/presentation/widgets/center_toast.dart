@@ -11,17 +11,24 @@ enum ToastType { success, error, info }
 class CenterToast {
   CenterToast._();
 
+  /// Ekranda o an duran bildirimi (varsa) kapatan geri çağrı. Bir sonraki
+  /// sayfaya geçildiğinde [ToastDismissObserver] tarafından çağrılır.
+  static VoidCallback? _dismissCurrent;
+
   static void show(
     BuildContext context, {
     required String message,
     ToastType type = ToastType.info,
-    Duration duration = const Duration(seconds: 3),
+    Duration duration = const Duration(milliseconds: 2200),
     String? actionLabel,
     VoidCallback? onAction,
   }) {
     if (!context.mounted) return;
     final overlay = Overlay.maybeOf(context, rootOverlay: true);
     if (overlay == null) return;
+
+    // Yeni bir bildirim gösterileceği için eskisi varsa hemen kapatılır.
+    _dismissCurrent?.call();
 
     late OverlayEntry entry;
     entry = OverlayEntry(
@@ -33,11 +40,37 @@ class CenterToast {
         onAction: onAction,
         onDismissed: () {
           if (entry.mounted) entry.remove();
+          _dismissCurrent = null;
         },
       ),
     );
+    _dismissCurrent = entry.remove;
     overlay.insert(entry);
   }
+
+  /// Ekranda bir bildirim varken uygulama içinde başka bir sayfa açılırsa
+  /// (bkz. [ToastDismissObserver]) bildirimi anında kaldırır.
+  static void dismissAll() {
+    _dismissCurrent?.call();
+    _dismissCurrent = null;
+  }
+}
+
+/// Uygulama içinde bir sayfa geçişi (push/pop/replace) olduğunda ekranda
+/// duran [CenterToast]'ı kapatır — bir bildirim başka bir sayfaya taşınmış
+/// gibi görünmeye devam etmesin diye.
+class ToastDismissObserver extends NavigatorObserver {
+  @override
+  void didPush(Route route, Route? previousRoute) => CenterToast.dismissAll();
+
+  @override
+  void didPop(Route route, Route? previousRoute) => CenterToast.dismissAll();
+
+  @override
+  void didReplace({Route? newRoute, Route? oldRoute}) => CenterToast.dismissAll();
+
+  @override
+  void didRemove(Route route, Route? previousRoute) => CenterToast.dismissAll();
 }
 
 class _CenterToastWidget extends StatefulWidget {

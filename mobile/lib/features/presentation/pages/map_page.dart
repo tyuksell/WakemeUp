@@ -61,8 +61,11 @@ class _MapPageState extends State<MapPage> {
   double? _previewDistanceMeters;
   bool _isCalculatingDistance = false;
 
-  // Favori hedefler (ev/iş gibi) — hızlı seçim için.
+  // Favori hedefler (ev/iş gibi) — favoriler ikonuna tıklayınca listelenir.
   List<FavoriteDestination> _favorites = [];
+
+  // Geçmişten hesaplanan en sık ziyaret edilen 2 rota — arama çubuğunun altında.
+  List<FavoriteDestination> _frequentRoutes = [];
 
   // Mapbox token (.env'den okunur)
   String get _mapboxToken => dotenv.env['MAPBOX_ACCESS_TOKEN'] ?? '';
@@ -74,6 +77,7 @@ class _MapPageState extends State<MapPage> {
     // TextField değişince suffixIcon rebuild'i tetikle
     _searchController.addListener(() => setState(() {}));
     _loadFavorites();
+    _loadFrequentRoutes();
 
     // Sayfa geçiş animasyonunun pürüzsüz tamamlanması için konum alma işlemini geciktiriyoruz.
     Future.delayed(const Duration(milliseconds: 400), () {
@@ -86,6 +90,126 @@ class _MapPageState extends State<MapPage> {
   Future<void> _loadFavorites() async {
     final favorites = await HiveService.getFavorites();
     if (mounted) setState(() => _favorites = favorites);
+  }
+
+  /// Geçmiş rotalar arasında hedef adına göre gruplanmış en sık tekrar eden
+  /// 2 rotayı hesaplar; arama çubuğunun hemen altında hızlı seçim için gösterilir.
+  Future<void> _loadFrequentRoutes() async {
+    final history = await HiveService.getHistory();
+    final Map<String, MapEntry<FavoriteDestination, int>> counts = {};
+    for (final entry in history) {
+      final existing = counts[entry.destinationName];
+      counts[entry.destinationName] = MapEntry(
+        FavoriteDestination(name: entry.destinationName, lat: entry.lat, lng: entry.lng),
+        (existing?.value ?? 0) + 1,
+      );
+    }
+    final sorted = counts.values.toList()..sort((a, b) => b.value.compareTo(a.value));
+    if (mounted) {
+      setState(() => _frequentRoutes = sorted.take(2).map((e) => e.key).toList());
+    }
+  }
+
+  /// Şu an seçili olan hedef zaten favorilerde mi? (isimle eşleştirilir —
+  /// favorilerin kendisi de aynı şekilde isimle tekilleştirilir.)
+  bool get _isSelectionFavorite =>
+      _favorites.any((f) => f.name == _searchController.text.trim());
+
+  /// Yıldız simgesine dokununca: favoride değilse isim sorup ekler, zaten
+  /// favorideyse hemen kaldırır. Ayrı bir "Favori Ekle" düğmesine gerek
+  /// bırakmaz — favorileme tamamen bu tek yıldız üzerinden yapılır.
+  Future<void> _toggleFavorite() async {
+    final name = _searchController.text.trim();
+    if (name.isEmpty) {
+      _showErrorSnackBar('Önce haritadan veya aramadan bir hedef seçin.');
+      return;
+    }
+    if (_isSelectionFavorite) {
+      await HiveService.removeFavorite(name);
+      await _loadFavorites();
+      if (mounted) _showSuccessSnackBar('"$name" favorilerden çıkarıldı.');
+    } else {
+      await _saveCurrentAsFavorite();
+    }
+  }
+
+  /// Favoriler ikonuna dokununca: favori konumları listeleyen bir alt panel
+  /// açar. Bir favoriye dokunmak onu doğrudan rota olarak seçer.
+  void _showFavoritesSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            return SafeArea(
+              child: Container(
+                margin: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(16),
+                constraints: const BoxConstraints(maxHeight: 420),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).cardTheme.color?.withOpacity(0.98) ?? Colors.black87,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.star_rounded, color: AppColors.neonOrange, size: 20),
+                        SizedBox(width: 8),
+                        Text('Favori Konumlar',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    if (_favorites.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 20),
+                        child: Text(
+                          'Henüz favori eklenmedi. Bir hedef seçip yıldız simgesine dokunarak ekleyebilirsiniz.',
+                          style: TextStyle(color: AppColors.textMuted, fontSize: 13, height: 1.5),
+                        ),
+                      )
+                    else
+                      Flexible(
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: _favorites.length,
+                          separatorBuilder: (_, _) =>
+                              const Divider(height: 1, color: Colors.white12),
+                          itemBuilder: (context, index) {
+                            final favorite = _favorites[index];
+                            return ListTile(
+                              leading: const Icon(Icons.star_rounded, color: AppColors.neonOrange),
+                              title: Text(favorite.name),
+                              trailing: IconButton(
+                                tooltip: 'Favorilerden Kaldır',
+                                icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                                onPressed: () async {
+                                  await HiveService.removeFavorite(favorite.name);
+                                  await _loadFavorites();
+                                  setSheetState(() {});
+                                },
+                              ),
+                              onTap: () {
+                                Navigator.pop(sheetContext);
+                                _selectFavorite(favorite);
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _selectFavorite(FavoriteDestination favorite) async {
@@ -708,6 +832,23 @@ class _MapPageState extends State<MapPage> {
             ),
           ),
 
+          // ── Favoriler ───────────────────────────────────
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 10,
+            right: 10,
+            child: Container(
+              decoration: BoxDecoration(
+                color: theme.cardTheme.color?.withOpacity(0.7) ?? Colors.black54,
+                shape: BoxShape.circle,
+              ),
+              child: IconButton(
+                tooltip: 'Favori Konumlar',
+                icon: const Icon(Icons.star_rounded, size: 20, color: AppColors.neonOrange),
+                onPressed: _showFavoritesSheet,
+              ),
+            ),
+          ),
+
           // ── Arama + Öneri Paneli ───────────────────────
           Positioned(
             top: 80,
@@ -742,33 +883,23 @@ class _MapPageState extends State<MapPage> {
                     ),
                   ),
 
-                  // Favori hedefler — sola kaydırarak gezilebilen hızlı seçim şeridi.
-                  // İlk çip her zaman "Favori Ekle"dir; mevcut favoriler onun yanında sıralanır.
-                  if (_suggestions.isEmpty)
+                  // Sık ziyaret edilen rotalar — arama çubuğunun hemen altında, en fazla 2 tane.
+                  if (_suggestions.isEmpty && _frequentRoutes.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 10),
                       child: SizedBox(
                         height: 34,
                         child: ListView.separated(
                           scrollDirection: Axis.horizontal,
-                          itemCount: _favorites.length + 1,
+                          itemCount: _frequentRoutes.length,
                           separatorBuilder: (_, _) => const SizedBox(width: 8),
                           itemBuilder: (context, index) {
-                            if (index == 0) {
-                              return ActionChip(
-                                avatar: const Icon(Icons.add_rounded, size: 16, color: AppColors.neonOrange),
-                                label: const Text('Favori Ekle', style: TextStyle(fontSize: 12)),
-                                backgroundColor: theme.cardTheme.color?.withOpacity(0.92),
-                                side: BorderSide(color: AppColors.neonOrange.withOpacity(0.4)),
-                                onPressed: _saveCurrentAsFavorite,
-                              );
-                            }
-                            final favorite = _favorites[index - 1];
+                            final route = _frequentRoutes[index];
                             return ActionChip(
-                              avatar: const Icon(Icons.star_rounded, size: 16, color: AppColors.neonOrange),
-                              label: Text(favorite.name, style: const TextStyle(fontSize: 12)),
+                              avatar: const Icon(Icons.history_rounded, size: 16, color: AppColors.neonCyan),
+                              label: Text(route.name, style: const TextStyle(fontSize: 12)),
                               backgroundColor: theme.cardTheme.color?.withOpacity(0.92),
-                              onPressed: () => _selectFavorite(favorite),
+                              onPressed: () => _selectFavorite(route),
                             );
                           },
                         ),
@@ -891,9 +1022,12 @@ class _MapPageState extends State<MapPage> {
                         ),
                         if (_searchController.text.isNotEmpty)
                           IconButton(
-                            tooltip: 'Favorilere Ekle',
-                            icon: const Icon(Icons.star_border_rounded, color: AppColors.neonOrange),
-                            onPressed: _saveCurrentAsFavorite,
+                            tooltip: _isSelectionFavorite ? 'Favorilerden Kaldır' : 'Favorilere Ekle',
+                            icon: Icon(
+                              _isSelectionFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+                              color: AppColors.neonOrange,
+                            ),
+                            onPressed: _toggleFavorite,
                           ),
                       ],
                     ),

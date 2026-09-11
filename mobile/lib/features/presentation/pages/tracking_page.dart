@@ -585,47 +585,52 @@ class _TrackingPageState extends State<TrackingPage> {
                               Text('Hedef', style: TextStyle(color: theme.colorScheme.secondary, fontSize: 12, fontWeight: FontWeight.bold)),
                             ],
                           ),
-                          const SizedBox(height: 40),
-
-                          // Kullanıcı dostu uyarı kutusu
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: AppColors.neonOrange.withOpacity(0.06),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: AppColors.neonOrange.withOpacity(0.25),
-                                width: 1,
+                          // Bu uyarı yalnızca "Alarmı Sustur" düğmesi
+                          // görünürken (alarm çalarken ya da susturma
+                          // beklemedeyken) bir anlam ifade eder.
+                          if (!_isMuted && (_mutePending || _alarmIsRinging)) ...[
+                            const SizedBox(height: 40),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: AppColors.neonOrange.withOpacity(0.06),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: AppColors.neonOrange.withOpacity(0.25),
+                                  width: 1,
+                                ),
                               ),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.warning_amber_rounded,
-                                    color: AppColors.neonOrange, size: 20),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    'Alarmı susturmak için düğmeyi 3 saniye basılı tutmanız gerekir. '
-                                    'Onayladıktan sonra ${_kMuteUndoWindow.inSeconds} saniye içinde '
-                                    '"Geri Al" diyebilirsiniz; süre dolduğunda takip tamamen durur ve '
-                                    'tekrar otomatik başlamaz.',
-                                    style: TextStyle(
-                                      color: AppColors.textSecondary,
-                                      fontSize: 12,
-                                      height: 1.5,
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.warning_amber_rounded,
+                                      color: AppColors.neonOrange, size: 20),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Alarmı susturmak için düğmeyi 3 saniye basılı tutmanız gerekir. '
+                                      'Onayladıktan sonra ${_kMuteUndoWindow.inSeconds} saniye içinde '
+                                      '"Geri Al" diyebilirsiniz; süre dolduğunda takip tamamen durur ve '
+                                      'tekrar otomatik başlamaz.',
+                                      style: TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12,
+                                        height: 1.5,
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
-                          )
+                          ],
                         ],
                       ),
                     ),
                     const SizedBox(height: 40),
 
-                    // Mute / Stop Action Buttons
-                    if (!_isMuted) ...[
+                    // Mute / Stop Action Buttons — alarm çalmıyorken (ve
+                    // susturma zaten beklemedeyken değilse) bu düğmenin
+                    // gösterilmesine gerek yok.
+                    if (!_isMuted && (_mutePending || _alarmIsRinging)) ...[
                       if (_mutePending)
                         Container(
                           height: 60,

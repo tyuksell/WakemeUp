@@ -6,6 +6,7 @@ import 'core/services/hive_service.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/background_service.dart';
 import 'features/presentation/pages/home_page.dart';
+import 'features/presentation/widgets/center_toast.dart';
 
 void main() async {
   // Ensure Flutter engine is initialized
@@ -39,6 +40,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       // Uygulama kimliği koyu/neon temaya göre tasarlandı; açık tema desteklenmiyor.
       theme: AppTheme.darkTheme,
+      navigatorObservers: [ToastDismissObserver()],
       home: const HomePage(),
     );
   }

@@ -4,7 +4,6 @@ import '../../../../core/services/hive_service.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
 import '../widgets/grain_overlay.dart';
-import '../widgets/center_toast.dart';
 
 /// Kademeli alarmın hangi mesafelerde tetikleneceğini kullanıcının
 /// ayarlamasını sağlar. Değerler yalnızca yeni başlatılan rotalara uygulanır;
@@ -71,11 +70,6 @@ class _SettingsPageState extends State<SettingsPage> {
     ));
     if (!mounted) return;
     setState(() => _isSaving = false);
-    CenterToast.show(
-      context,
-      message: 'Alarm eşikleri kaydedildi. Yeni rotalarda geçerli olacak.',
-      type: ToastType.success,
-    );
     Navigator.pop(context);
   }
 
