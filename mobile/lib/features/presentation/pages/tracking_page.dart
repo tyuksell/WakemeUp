@@ -13,6 +13,7 @@ import '../widgets/glass_card.dart';
 import '../widgets/hold_to_confirm_button.dart';
 import '../widgets/grain_overlay.dart';
 import '../widgets/center_toast.dart';
+import 'home_page.dart';
 
 /// Susturma onaylandıktan sonra, geri alınamaz eylemler (backend'e "bir daha
 /// asla tetikleme" bildirimi, servisi durdurma) uygulanmadan önce kullanıcıya
@@ -92,7 +93,9 @@ class _TrackingPageState extends State<TrackingPage> {
     if (_distanceMeters != null) return;
 
     if (_syncRetryCount >= 10) {
-      debugPrint('[TrackingPage] Konum verisi alınamadı (Maksimum deneme sınırına ulaşıldı).');
+      debugPrint(
+        '[TrackingPage] Konum verisi alınamadı (Maksimum deneme sınırına ulaşıldı).',
+      );
       if (mounted) {
         setState(() {
           _syncFailed = true;
@@ -105,7 +108,9 @@ class _TrackingPageState extends State<TrackingPage> {
     _syncTimer = Timer(Duration(seconds: delaySeconds), () {
       if (_distanceMeters == null) {
         _syncRetryCount++;
-        debugPrint('[TrackingPage] Mesafe henüz gelmedi, sync tetikleniyor... (Deneme: $_syncRetryCount, Sonraki gecikme: ${delaySeconds}s)');
+        debugPrint(
+          '[TrackingPage] Mesafe henüz gelmedi, sync tetikleniyor... (Deneme: $_syncRetryCount, Sonraki gecikme: ${delaySeconds}s)',
+        );
         _triggerSync();
         _startSyncTimer();
       }
@@ -160,7 +165,9 @@ class _TrackingPageState extends State<TrackingPage> {
 
         final double dist = (rawDist as num).toDouble();
 
-        debugPrint('[TrackingPage] BG update: dist=${dist.toStringAsFixed(1)}m');
+        debugPrint(
+          '[TrackingPage] BG update: dist=${dist.toStringAsFixed(1)}m',
+        );
 
         // UI'ın kendi isolate'inde güvenle diske kaydet (deadlock'u önler)
         HiveService.setLastDistance(dist);
@@ -215,7 +222,11 @@ class _TrackingPageState extends State<TrackingPage> {
   Future<void> _markHistoryMuted() async {
     final historyId = await HiveService.getActiveHistoryId();
     if (historyId != null) {
-      await HiveService.updateHistoryEntryStatus(historyId, status: 'MUTED', isMuted: true);
+      await HiveService.updateHistoryEntryStatus(
+        historyId,
+        status: 'MUTED',
+        isMuted: true,
+      );
     }
   }
 
@@ -277,10 +288,14 @@ class _TrackingPageState extends State<TrackingPage> {
     if (routeId != null && routeId != kOfflineRouteId) {
       try {
         final deviceId = await HiveService.getOrCreateDeviceId();
-        await http.post(
-          Uri.parse('${MyBackgroundService.serverBaseUrl}/routes/$routeId/mute'),
-          headers: MyBackgroundService.apiHeaders(deviceId),
-        ).timeout(const Duration(seconds: 4));
+        await http
+            .post(
+              Uri.parse(
+                '${MyBackgroundService.serverBaseUrl}/routes/$routeId/mute',
+              ),
+              headers: MyBackgroundService.apiHeaders(deviceId),
+            )
+            .timeout(const Duration(seconds: 4));
       } catch (e) {
         // Silent catch for offline capability
       }
@@ -303,7 +318,11 @@ class _TrackingPageState extends State<TrackingPage> {
       final history = await HiveService.getHistory();
       final current = history.where((e) => e.id == historyId);
       if (current.isNotEmpty && current.first.status == 'ACTIVE') {
-        await HiveService.updateHistoryEntryStatus(historyId, status: 'MUTED', isMuted: false);
+        await HiveService.updateHistoryEntryStatus(
+          historyId,
+          status: 'MUTED',
+          isMuted: false,
+        );
       }
     }
 
@@ -312,7 +331,14 @@ class _TrackingPageState extends State<TrackingPage> {
     FlutterBackgroundService().invoke('stopService');
 
     if (mounted) {
-      Navigator.of(context).popUntil((route) => route.isFirst);
+      // popUntil(isFirst) yerine: uygulama bir bildirimden doğrudan bu
+      // sayfayla (main.dart'taki startOnTracking) başlamış olabilir — bu
+      // durumda TrackingPage zaten "ilk" rotadır ve popUntil hiçbir şey
+      // yapmaz. pushAndRemoveUntil her durumda ana sayfaya döner.
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const HomePage()),
+        (route) => false,
+      );
     }
   }
 
@@ -331,7 +357,6 @@ class _TrackingPageState extends State<TrackingPage> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -340,7 +365,9 @@ class _TrackingPageState extends State<TrackingPage> {
     // İlerleme oranı: gerçek veri yoksa 0.0 (çubuk boş).
     // _initialDistance ve _distanceMeters null ise animasyon bekler.
     double progress = 0.0;
-    if (_initialDistance != null && _initialDistance! > 0 && _distanceMeters != null) {
+    if (_initialDistance != null &&
+        _initialDistance! > 0 &&
+        _distanceMeters != null) {
       progress = (1.0 - (_distanceMeters! / _initialDistance!)).clamp(0.0, 1.0);
     }
 
@@ -376,305 +403,404 @@ class _TrackingPageState extends State<TrackingPage> {
           const GrainOverlay(),
 
           SafeArea(
-            child: SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Custom Premium Header
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.arrow_back_ios_new),
-                          onPressed: _stopTrackingSession,
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: _isMuted 
-                                ? AppColors.neonPink.withOpacity(0.1) 
-                                : AppColors.neonCyan.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: _isMuted ? AppColors.neonPink : AppColors.neonCyan,
-                              width: 1,
-                            ),
-                          ),
-                          child: Text(
-                            _isMuted ? 'SUSTURULDU' : 'TAKİP EDİLİYOR',
-                            style: TextStyle(
-                              color: _isMuted ? AppColors.neonPink : AppColors.neonCyan,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ],
+            // Ekran, tüm bileşenlerin toplam boyu ekrandan kısa kaldığında bile
+            // (ör. alarm çalmadığı için susturma bölümü gizliyken) altta boş
+            // siyah alan kalmasın diye LayoutBuilder + Spacer ile dolduruluyor;
+            // içerik ekrandan uzun olduğunda ise normal şekilde kaydırılabilir.
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
                     ),
-                    const SizedBox(height: 30),
-
-                    // Alarm o an çalıyorsa: uygulama ön plandaysa bildirimin
-                    // kendi "Durdur" düğmesini beklemeden buradan da durdurulabilir.
-                    if (_alarmIsRinging)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 24),
-                        child: GestureDetector(
-                          onTap: () => Alarm.stopAll(),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: AppColors.neonPink.withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: AppColors.neonPink, width: 1.5),
-                            ),
-                            child: Row(
+                    child: IntrinsicHeight(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            // Custom Premium Header
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                const Icon(Icons.alarm, color: AppColors.neonPink, size: 26),
-                                const SizedBox(width: 12),
-                                const Expanded(
-                                  child: Text(
-                                    'ALARM ÇALIYOR',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15,
-                                      letterSpacing: 0.5,
-                                    ),
-                                  ),
+                                IconButton(
+                                  icon: const Icon(Icons.arrow_back_ios_new),
+                                  onPressed: _stopTrackingSession,
                                 ),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.neonPink,
-                                    borderRadius: BorderRadius.circular(20),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 8,
                                   ),
-                                  child: const Text(
-                                    'DURDUR',
-                                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                  decoration: BoxDecoration(
+                                    color: _isMuted
+                                        ? AppColors.neonPink.withOpacity(0.1)
+                                        : AppColors.neonCyan.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: _isMuted
+                                          ? AppColors.neonPink
+                                          : AppColors.neonCyan,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    _isMuted ? 'SUSTURULDU' : 'TAKİP EDİLİYOR',
+                                    style: TextStyle(
+                                      color: _isMuted
+                                          ? AppColors.neonPink
+                                          : AppColors.neonCyan,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
                                   ),
                                 ),
                               ],
                             ),
-                          ),
-                        ),
-                      ),
+                            const SizedBox(height: 30),
 
-                    // Distance display
-                    Center(
-                      child: Column(
-                        children: [
-                          const Text(
-                            'KALAN MESAFE',
-                            style: TextStyle(
-                              color: AppColors.textMuted,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 1.6,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            _syncFailed ? 'Konum Alınamadı' : _formatDistance(_distanceMeters),
-                            style: theme.textTheme.headlineMedium?.copyWith(
-                              fontSize: (_distanceMeters == null || _syncFailed) ? 28 : 56,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: -1.0,
-                              color: _syncFailed ? Colors.redAccent : null,
-                            ),
-                          ),
-                          if (_syncFailed)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 8),
-                              child: Text(
-                                'Lütfen GPS veya internet bağlantınızı kontrol edin.',
-                                style: TextStyle(color: Colors.redAccent, fontSize: 13),
-                              ),
-                            ),
-                          // Varış etiketi — takip devam ederken gösterilir
-                          if (_hasArrived && !_syncFailed)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 10),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(
-                                    Icons.location_on,
-                                    color: AppColors.neonCyan,
-                                    size: 16,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    'Varış Noktasına Ulaşıldı',
-                                    style: TextStyle(
-                                      color: AppColors.neonCyan,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      letterSpacing: 0.3,
+                            // Alarm o an çalıyorsa: uygulama ön plandaysa bildirimin
+                            // kendi "Durdur" düğmesini beklemeden buradan da durdurulabilir.
+                            if (_alarmIsRinging)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 24),
+                                child: GestureDetector(
+                                  onTap: () => Alarm.stopAll(),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.neonPink.withOpacity(
+                                        0.15,
+                                      ),
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(
+                                        color: AppColors.neonPink,
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.alarm,
+                                          color: AppColors.neonPink,
+                                          size: 26,
+                                        ),
+                                        const SizedBox(width: 12),
+                                        const Expanded(
+                                          child: Text(
+                                            'ALARM ÇALIYOR',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 15,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 14,
+                                            vertical: 8,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.neonPink,
+                                            borderRadius: BorderRadius.circular(
+                                              20,
+                                            ),
+                                          ),
+                                          child: const Text(
+                                            'DURDUR',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
+                                ),
+                              ),
+
+                            // Distance display
+                            Center(
+                              child: Column(
+                                children: [
+                                  const Text(
+                                    'KALAN MESAFE',
+                                    style: TextStyle(
+                                      color: AppColors.textMuted,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: 1.6,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    _syncFailed
+                                        ? 'Konum Alınamadı'
+                                        : _formatDistance(_distanceMeters),
+                                    style: theme.textTheme.headlineMedium
+                                        ?.copyWith(
+                                          fontSize:
+                                              (_distanceMeters == null ||
+                                                  _syncFailed)
+                                              ? 28
+                                              : 56,
+                                          fontWeight: FontWeight.w900,
+                                          letterSpacing: -1.0,
+                                          color: _syncFailed
+                                              ? Colors.redAccent
+                                              : null,
+                                        ),
+                                  ),
+                                  if (_syncFailed)
+                                    const Padding(
+                                      padding: EdgeInsets.only(top: 8),
+                                      child: Text(
+                                        'Lütfen GPS veya internet bağlantınızı kontrol edin.',
+                                        style: TextStyle(
+                                          color: Colors.redAccent,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    ),
+                                  // Varış etiketi — takip devam ederken gösterilir
+                                  if (_hasArrived && !_syncFailed)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 10),
+                                      child: Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          const Icon(
+                                            Icons.location_on,
+                                            color: AppColors.neonCyan,
+                                            size: 16,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            'Varış Noktasına Ulaşıldı',
+                                            style: TextStyle(
+                                              color: AppColors.neonCyan,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w600,
+                                              letterSpacing: 0.3,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  // Hız göstergesi kaldırıldı
                                 ],
                               ),
                             ),
-                          // Hız göstergesi kaldırıldı
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 40),
+                            const SizedBox(height: 40),
 
-                    // Glassmorphism Center Panel
-                    GlassCard(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.location_on, color: AppColors.neonBlue),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  _destinationName,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 18,
+                            // Glassmorphism Center Panel
+                            GlassCard(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.location_on,
+                                        color: AppColors.neonBlue,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          _destinationName,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 18,
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 30),
-                          
-                          // Custom approach progress indicator
-                          Stack(
-                            children: [
-                              Container(
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                              ),
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 500),
-                                height: 8,
-                                width: MediaQuery.of(context).size.width * 0.75 * progress,
-                                decoration: BoxDecoration(
-                                  gradient: AppColors.neonBlueCyan,
-                                  borderRadius: BorderRadius.circular(4),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: AppColors.neonCyan.withOpacity(0.4),
-                                      blurRadius: 8,
-                                      offset: const Offset(0, 2),
+                                  const SizedBox(height: 30),
+
+                                  // Custom approach progress indicator
+                                  Stack(
+                                    children: [
+                                      Container(
+                                        height: 8,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.1),
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                        ),
+                                      ),
+                                      AnimatedContainer(
+                                        duration: const Duration(
+                                          milliseconds: 500,
+                                        ),
+                                        height: 8,
+                                        width:
+                                            MediaQuery.of(context).size.width *
+                                            0.75 *
+                                            progress,
+                                        decoration: BoxDecoration(
+                                          gradient: AppColors.neonBlueCyan,
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: AppColors.neonCyan
+                                                  .withOpacity(0.4),
+                                              blurRadius: 8,
+                                              offset: const Offset(0, 2),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      const Text(
+                                        'Başlangıç',
+                                        style: TextStyle(
+                                          color: AppColors.textMuted,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Hedef',
+                                        style: TextStyle(
+                                          color: theme.colorScheme.secondary,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  // Bu uyarı yalnızca "Alarmı Sustur" düğmesi
+                                  // görünürken (alarm çalarken ya da susturma
+                                  // beklemedeyken) bir anlam ifade eder.
+                                  if (!_isMuted &&
+                                      (_mutePending || _alarmIsRinging)) ...[
+                                    const SizedBox(height: 40),
+                                    Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.neonOrange.withOpacity(
+                                          0.06,
+                                        ),
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: AppColors.neonOrange
+                                              .withOpacity(0.25),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.warning_amber_rounded,
+                                            color: AppColors.neonOrange,
+                                            size: 20,
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Expanded(
+                                            child: Text(
+                                              'Alarmı susturmak için düğmeyi 3 saniye basılı tutmanız gerekir. '
+                                              'Onayladıktan sonra ${_kMuteUndoWindow.inSeconds} saniye içinde '
+                                              '"Geri Al" diyebilirsiniz; süre dolduğunda takip tamamen durur ve '
+                                              'tekrar otomatik başlamaz.',
+                                              style: TextStyle(
+                                                color: AppColors.textSecondary,
+                                                fontSize: 12,
+                                                height: 1.5,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ],
-                                ),
+                                ],
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Başlangıç', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
-                              Text('Hedef', style: TextStyle(color: theme.colorScheme.secondary, fontSize: 12, fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                          // Bu uyarı yalnızca "Alarmı Sustur" düğmesi
-                          // görünürken (alarm çalarken ya da susturma
-                          // beklemedeyken) bir anlam ifade eder.
-                          if (!_isMuted && (_mutePending || _alarmIsRinging)) ...[
+                            ),
                             const SizedBox(height: 40),
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: AppColors.neonOrange.withOpacity(0.06),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: AppColors.neonOrange.withOpacity(0.25),
-                                  width: 1,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.warning_amber_rounded,
-                                      color: AppColors.neonOrange, size: 20),
-                                  const SizedBox(width: 10),
-                                  Expanded(
+                            const Spacer(),
+
+                            // Mute / Stop Action Buttons — alarm çalmıyorken (ve
+                            // susturma zaten beklemedeyken değilse) bu düğmenin
+                            // gösterilmesine gerek yok.
+                            if (!_isMuted &&
+                                (_mutePending || _alarmIsRinging)) ...[
+                              if (_mutePending)
+                                Container(
+                                  height: 60,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.neonPink.withOpacity(0.12),
+                                    borderRadius: BorderRadius.circular(30),
+                                    border: Border.all(
+                                      color: AppColors.neonPink,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: const Padding(
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                    ),
                                     child: Text(
-                                      'Alarmı susturmak için düğmeyi 3 saniye basılı tutmanız gerekir. '
-                                      'Onayladıktan sonra ${_kMuteUndoWindow.inSeconds} saniye içinde '
-                                      '"Geri Al" diyebilirsiniz; süre dolduğunda takip tamamen durur ve '
-                                      'tekrar otomatik başlamaz.',
+                                      'Susturuluyor... Yukarıdaki bildirimden "GERİ AL" ile iptal edebilirsiniz',
+                                      textAlign: TextAlign.center,
                                       style: TextStyle(
-                                        color: AppColors.textSecondary,
-                                        fontSize: 12,
-                                        height: 1.5,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
                                       ),
                                     ),
                                   ),
-                                ],
+                                )
+                              else
+                                HoldToConfirmButton(
+                                  text: 'Alarmı Sustur (3sn Basılı Tut)',
+                                  holdingText: 'Bırakma, Susturuluyor...',
+                                  gradient: AppColors.neonPinkOrange,
+                                  holdDuration: const Duration(seconds: 3),
+                                  onConfirmed: _confirmMute,
+                                ),
+                              const SizedBox(height: 16),
+                            ],
+
+                            TextButton(
+                              onPressed: _stopTrackingSession,
+                              child: Text(
+                                'Takibi Tamamen Sonlandır',
+                                style: TextStyle(
+                                  color: _isMuted
+                                      ? theme.colorScheme.primary
+                                      : AppColors.textGrey,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
                               ),
                             ),
+                            const SizedBox(height: 10),
                           ],
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 40),
-
-                    // Mute / Stop Action Buttons — alarm çalmıyorken (ve
-                    // susturma zaten beklemedeyken değilse) bu düğmenin
-                    // gösterilmesine gerek yok.
-                    if (!_isMuted && (_mutePending || _alarmIsRinging)) ...[
-                      if (_mutePending)
-                        Container(
-                          height: 60,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: AppColors.neonPink.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(30),
-                            border: Border.all(color: AppColors.neonPink, width: 1),
-                          ),
-                          child: const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 16),
-                            child: Text(
-                              'Susturuluyor... Yukarıdaki bildirimden "GERİ AL" ile iptal edebilirsiniz',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
-                            ),
-                          ),
-                        )
-                      else
-                        HoldToConfirmButton(
-                          text: 'Alarmı Sustur (3sn Basılı Tut)',
-                          holdingText: 'Bırakma, Susturuluyor...',
-                          gradient: AppColors.neonPinkOrange,
-                          holdDuration: const Duration(seconds: 3),
-                          onConfirmed: _confirmMute,
-                        ),
-                      const SizedBox(height: 16),
-                    ],
-
-                    TextButton(
-                      onPressed: _stopTrackingSession,
-                      child: Text(
-                        'Takibi Tamamen Sonlandır',
-                        style: TextStyle(
-                          color: _isMuted ? theme.colorScheme.primary : AppColors.textGrey,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 10),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              },
             ),
           ),
         ],
@@ -682,4 +808,3 @@ class _TrackingPageState extends State<TrackingPage> {
     );
   }
 }
-

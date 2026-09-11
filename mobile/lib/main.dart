@@ -6,6 +6,7 @@ import 'core/services/hive_service.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/background_service.dart';
 import 'features/presentation/pages/home_page.dart';
+import 'features/presentation/pages/tracking_page.dart';
 import 'features/presentation/widgets/center_toast.dart';
 
 void main() async {
@@ -27,11 +28,19 @@ void main() async {
   await NotificationService.init();
   await MyBackgroundService.initializeService();
 
-  runApp(const MyApp());
+  // Uygulama tamamen kapatılıp arka plan bildirimine (takip bildirimi ya da
+  // alarm) dokunularak yeniden açıldığında ana isolate sıfırdan burada
+  // başlar. Böyle bir anda hâlâ aktif bir takip varsa kullanıcıyı açılış
+  // sayfası yerine doğrudan takip ekranına götürüyoruz.
+  final bool startOnTracking = await HiveService.getIsTracking();
+
+  runApp(MyApp(startOnTracking: startOnTracking));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final bool startOnTracking;
+
+  const MyApp({super.key, this.startOnTracking = false});
 
   @override
   Widget build(BuildContext context) {
@@ -41,7 +50,7 @@ class MyApp extends StatelessWidget {
       // Uygulama kimliği koyu/neon temaya göre tasarlandı; açık tema desteklenmiyor.
       theme: AppTheme.darkTheme,
       navigatorObservers: [ToastDismissObserver()],
-      home: const HomePage(),
+      home: startOnTracking ? const TrackingPage() : const HomePage(),
     );
   }
 }
