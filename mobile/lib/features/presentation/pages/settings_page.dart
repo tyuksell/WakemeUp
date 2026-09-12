@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/services/hive_service.dart';
+import '../../../../core/locale_controller.dart';
+import '../../../l10n/app_localizations.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
 import '../widgets/grain_overlay.dart';
@@ -122,11 +124,32 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _buildLanguageChip(String code, String label) {
+    return ValueListenableBuilder<Locale>(
+      valueListenable: appLocale,
+      builder: (context, locale, _) {
+        final bool selected = locale.languageCode == code;
+        return ChoiceChip(
+          label: Text(label),
+          selected: selected,
+          onSelected: (_) => setAppLocale(code),
+          selectedColor: AppColors.neonOrange.withValues(alpha: 0.25),
+          labelStyle: TextStyle(
+            color: selected ? AppColors.neonOrange : AppColors.textSecondary,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+          side: BorderSide(color: selected ? AppColors.neonOrange : Colors.white24),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Alarm Eşikleri'),
+        title: Text(l10n.settingsTitle),
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
@@ -136,141 +159,160 @@ class _SettingsPageState extends State<SettingsPage> {
           _isLoading
               ? const Center(child: CircularProgressIndicator())
               : SafeArea(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Text(
-                      'WakeMeUp, hedefinize yaklaştıkça üç aşamada sizi uyarır. '
-                      'Bu mesafeleri kendi tercihinize göre ayarlayabilirsiniz.',
-                      style: TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.6),
-                    ),
-                    const SizedBox(height: 24),
-                    GlassCard(
-                      child: Column(
-                        children: [
-                          _buildSlider(
-                            label: 'Uzak Mesafe Uyarısı',
-                            color: AppColors.neonBlue,
-                            value: _farM,
-                            min: 500,
-                            max: 5000,
-                            onChanged: (v) => setState(() => _farM = v),
-                          ),
-                          const SizedBox(height: 16),
-                          _buildSlider(
-                            label: 'Orta Mesafe Uyarısı',
-                            color: AppColors.neonCyan,
-                            value: _midM,
-                            min: 100,
-                            max: 3000,
-                            onChanged: (v) => setState(() => _midM = v),
-                          ),
-                          const SizedBox(height: 16),
-                          _buildSlider(
-                            label: 'Yakın Mesafe Uyarısı (Yüksek Öncelikli)',
-                            color: AppColors.neonPink,
-                            value: _nearM,
-                            min: 50,
-                            max: 1500,
-                            onChanged: (v) => setState(() => _nearM = v),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (!_isValid)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 16),
-                        child: Text(
-                          'Uzak mesafe > orta mesafe > yakın mesafe olmalıdır.',
-                          style: TextStyle(color: AppColors.neonPink, fontSize: 12),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          l10n.settingsIntro,
+                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 13, height: 1.6),
                         ),
-                      ),
-                    const SizedBox(height: 36),
-                    const Text(
-                      'Alarm Sesi ve Titreşim',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Değişiklikler anında kaydedilir.',
-                      style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-                    ),
-                    const SizedBox(height: 16),
-                    GlassCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        const SizedBox(height: 24),
+                        GlassCard(
+                          child: Column(
                             children: [
-                              const Row(
-                                children: [
-                                  Icon(Icons.volume_up_rounded, color: AppColors.neonOrange, size: 20),
-                                  SizedBox(width: 10),
-                                  Text('Alarm Ses Düzeyi',
-                                      style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
-                                ],
+                              _buildSlider(
+                                label: l10n.settingsFarLabel,
+                                color: AppColors.neonBlue,
+                                value: _farM,
+                                min: 500,
+                                max: 5000,
+                                onChanged: (v) => setState(() => _farM = v),
                               ),
-                              Text(
-                                '${(_alarmVolume * 100).round()}%',
-                                style: const TextStyle(
-                                    color: AppColors.neonOrange, fontWeight: FontWeight.bold, fontSize: 16),
+                              const SizedBox(height: 16),
+                              _buildSlider(
+                                label: l10n.settingsMidLabel,
+                                color: AppColors.neonCyan,
+                                value: _midM,
+                                min: 100,
+                                max: 3000,
+                                onChanged: (v) => setState(() => _midM = v),
+                              ),
+                              const SizedBox(height: 16),
+                              _buildSlider(
+                                label: l10n.settingsNearLabel,
+                                color: AppColors.neonPink,
+                                value: _nearM,
+                                min: 50,
+                                max: 1500,
+                                onChanged: (v) => setState(() => _nearM = v),
                               ),
                             ],
                           ),
-                          SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              activeTrackColor: AppColors.neonOrange,
-                              thumbColor: AppColors.neonOrange,
-                              overlayColor: AppColors.neonOrange.withValues(alpha: 0.2),
-                              inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-                            ),
-                            child: Slider(
-                              value: _alarmVolume.clamp(0.1, 1.0),
-                              min: 0.1,
-                              max: 1.0,
-                              divisions: 9,
-                              onChanged: _setAlarmVolume,
+                        ),
+                        if (!_isValid)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 16),
+                            child: Text(
+                              l10n.settingsThresholdOrderError,
+                              style: const TextStyle(color: AppColors.neonPink, fontSize: 12),
                             ),
                           ),
-                          const Divider(height: 24, color: Colors.white12),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        const SizedBox(height: 36),
+                        Text(
+                          l10n.settingsSoundVibrationTitle,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          l10n.settingsSoundVibrationHint,
+                          style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+                        ),
+                        const SizedBox(height: 16),
+                        GlassCard(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Row(
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Icon(Icons.vibration_rounded, color: AppColors.neonOrange, size: 20),
-                                  SizedBox(width: 10),
-                                  Text('Alarm Titreşimi',
-                                      style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.volume_up_rounded, color: AppColors.neonOrange, size: 20),
+                                      const SizedBox(width: 10),
+                                      Text(l10n.settingsVolumeLabel,
+                                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+                                    ],
+                                  ),
+                                  Text(
+                                    '${(_alarmVolume * 100).round()}%',
+                                    style: const TextStyle(
+                                        color: AppColors.neonOrange, fontWeight: FontWeight.bold, fontSize: 16),
+                                  ),
                                 ],
                               ),
-                              Switch(
-                                value: _alarmVibrate,
-                                activeThumbColor: AppColors.neonOrange,
-                                onChanged: _setAlarmVibrate,
+                              SliderTheme(
+                                data: SliderTheme.of(context).copyWith(
+                                  activeTrackColor: AppColors.neonOrange,
+                                  thumbColor: AppColors.neonOrange,
+                                  overlayColor: AppColors.neonOrange.withValues(alpha: 0.2),
+                                  inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
+                                ),
+                                child: Slider(
+                                  value: _alarmVolume.clamp(0.1, 1.0),
+                                  min: 0.1,
+                                  max: 1.0,
+                                  divisions: 9,
+                                  onChanged: _setAlarmVolume,
+                                ),
+                              ),
+                              const Divider(height: 24, color: Colors.white12),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.vibration_rounded, color: AppColors.neonOrange, size: 20),
+                                      const SizedBox(width: 10),
+                                      Text(l10n.settingsVibrateLabel,
+                                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+                                    ],
+                                  ),
+                                  Switch(
+                                    value: _alarmVibrate,
+                                    activeThumbColor: AppColors.neonOrange,
+                                    onChanged: _setAlarmVibrate,
+                                  ),
+                                ],
                               ),
                             ],
                           ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                    _isSaving
-                        ? const Center(child: CircularProgressIndicator())
-                        : Opacity(
-                            opacity: _isValid ? 1.0 : 0.4,
-                            child: IgnorePointer(
-                              ignoring: !_isValid,
-                              child: NeonButton(text: 'Kaydet', onTap: _save),
-                            ),
+                        ),
+                        const SizedBox(height: 32),
+                        Text(
+                          l10n.settingsLanguageTitle,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          l10n.settingsLanguageHint,
+                          style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+                        ),
+                        const SizedBox(height: 16),
+                        GlassCard(
+                          child: Row(
+                            children: [
+                              _buildLanguageChip('tr', 'Türkçe'),
+                              const SizedBox(width: 12),
+                              _buildLanguageChip('en', 'English'),
+                            ],
                           ),
-                  ],
+                        ),
+                        const SizedBox(height: 32),
+                        _isSaving
+                            ? const Center(child: CircularProgressIndicator())
+                            : Opacity(
+                                opacity: _isValid ? 1.0 : 0.4,
+                                child: IgnorePointer(
+                                  ignoring: !_isValid,
+                                  child: NeonButton(text: l10n.settingsSave, onTap: _save),
+                                ),
+                              ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-            ),
         ],
       ),
     );

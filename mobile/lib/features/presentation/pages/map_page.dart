@@ -16,6 +16,7 @@ import '../../../../core/services/route_launcher.dart';
 import '../../../../core/utils/distance_calculator.dart';
 import '../widgets/neon_button.dart';
 import '../widgets/center_toast.dart';
+import '../../../l10n/app_localizations.dart';
 
 /// Debounce süresi: 350ms — kullanıcı yazmayı bıraktıktan sonra istek atılır.
 const _kAutocompleteDebounceDuration = Duration(milliseconds: 350);
@@ -34,6 +35,8 @@ class MapPage extends StatefulWidget {
 }
 
 class _MapPageState extends State<MapPage> {
+  AppLocalizations get l10n => AppLocalizations.of(context)!;
+
   // Mapbox controller
   MapboxMap? _mapboxMap;
   PointAnnotationManager? _pointAnnotationManager;
@@ -60,6 +63,15 @@ class _MapPageState extends State<MapPage> {
   // null → henüz hesaplanmadı / hesaplanıyor  |  -1 → hata
   double? _previewDistanceMeters;
   bool _isCalculatingDistance = false;
+
+  // Mapbox Directions API'den alınan gerçek yol mesafesi/süresi — kuş uçuşu
+  // mesafeye ek, tamamen bilgilendirici bir gösterge (alarm tetikleme mantığı
+  // hâlâ kuş uçuşu/backend mesafesine dayanır, bkz. background_service.dart).
+  // Not: Mapbox Directions'ta toplu taşıma (tren/otobüs) profili yok; en
+  // yakın yaklaşıklama olarak "driving" profili kullanılır.
+  double? _routeDistanceMeters;
+  int? _routeDurationSeconds;
+  bool _isFetchingRouteDistance = false;
 
   // Favori hedefler (ev/iş gibi) — favoriler ikonuna tıklayınca listelenir.
   List<FavoriteDestination> _favorites = [];
@@ -100,13 +112,20 @@ class _MapPageState extends State<MapPage> {
     for (final entry in history) {
       final existing = counts[entry.destinationName];
       counts[entry.destinationName] = MapEntry(
-        FavoriteDestination(name: entry.destinationName, lat: entry.lat, lng: entry.lng),
+        FavoriteDestination(
+          name: entry.destinationName,
+          lat: entry.lat,
+          lng: entry.lng,
+        ),
         (existing?.value ?? 0) + 1,
       );
     }
-    final sorted = counts.values.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final sorted = counts.values.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
     if (mounted) {
-      setState(() => _frequentRoutes = sorted.take(2).map((e) => e.key).toList());
+      setState(
+        () => _frequentRoutes = sorted.take(2).map((e) => e.key).toList(),
+      );
     }
   }
 
@@ -121,13 +140,13 @@ class _MapPageState extends State<MapPage> {
   Future<void> _toggleFavorite() async {
     final name = _searchController.text.trim();
     if (name.isEmpty) {
-      _showErrorSnackBar('Önce haritadan veya aramadan bir hedef seçin.');
+      _showErrorSnackBar(l10n.mapNoDestinationSelected);
       return;
     }
     if (_isSelectionFavorite) {
       await HiveService.removeFavorite(name);
       await _loadFavorites();
-      if (mounted) _showSuccessSnackBar('"$name" favorilerden çıkarıldı.');
+      if (mounted) _showSuccessSnackBar(l10n.mapRemovedFromFavorites(name));
     } else {
       await _saveCurrentAsFavorite();
     }
@@ -149,28 +168,43 @@ class _MapPageState extends State<MapPage> {
                 padding: const EdgeInsets.all(16),
                 constraints: const BoxConstraints(maxHeight: 420),
                 decoration: BoxDecoration(
-                  color: Theme.of(context).cardTheme.color?.withOpacity(0.98) ?? Colors.black87,
+                  color:
+                      Theme.of(context).cardTheme.color?.withOpacity(0.98) ??
+                      Colors.black87,
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Row(
+                    Row(
                       children: [
-                        Icon(Icons.star_rounded, color: AppColors.neonOrange, size: 20),
-                        SizedBox(width: 8),
-                        Text('Favori Konumlar',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const Icon(
+                          Icons.star_rounded,
+                          color: AppColors.neonOrange,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          l10n.mapFavoritesTitle,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 12),
                     if (_favorites.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 20),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 20),
                         child: Text(
-                          'Henüz favori eklenmedi. Bir hedef seçip yıldız simgesine dokunarak ekleyebilirsiniz.',
-                          style: TextStyle(color: AppColors.textMuted, fontSize: 13, height: 1.5),
+                          l10n.mapNoFavoritesHint,
+                          style: const TextStyle(
+                            color: AppColors.textMuted,
+                            fontSize: 13,
+                            height: 1.5,
+                          ),
                         ),
                       )
                     else
@@ -183,13 +217,21 @@ class _MapPageState extends State<MapPage> {
                           itemBuilder: (context, index) {
                             final favorite = _favorites[index];
                             return ListTile(
-                              leading: const Icon(Icons.star_rounded, color: AppColors.neonOrange),
+                              leading: const Icon(
+                                Icons.star_rounded,
+                                color: AppColors.neonOrange,
+                              ),
                               title: Text(favorite.name),
                               trailing: IconButton(
-                                tooltip: 'Favorilerden Kaldır',
-                                icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                                tooltip: l10n.mapRemoveFavoriteTooltip,
+                                icon: const Icon(
+                                  Icons.delete_outline_rounded,
+                                  size: 20,
+                                ),
                                 onPressed: () async {
-                                  await HiveService.removeFavorite(favorite.name);
+                                  await HiveService.removeFavorite(
+                                    favorite.name,
+                                  );
                                   await _loadFavorites();
                                   setSheetState(() {});
                                 },
@@ -219,9 +261,14 @@ class _MapPageState extends State<MapPage> {
       _suggestions = [];
       _searchController.text = favorite.name;
       _previewDistanceMeters = null;
+      _routeDistanceMeters = null;
+      _routeDurationSeconds = null;
     });
     _mapboxMap?.flyTo(
-      CameraOptions(center: Point(coordinates: Position(favorite.lng, favorite.lat)), zoom: 16.5),
+      CameraOptions(
+        center: Point(coordinates: Position(favorite.lng, favorite.lat)),
+        zoom: 16.5,
+      ),
       MapAnimationOptions(duration: 800),
     );
     await _updateMarker(favorite.lat, favorite.lng);
@@ -231,32 +278,37 @@ class _MapPageState extends State<MapPage> {
   Future<void> _saveCurrentAsFavorite() async {
     final defaultName = _searchController.text.trim();
     if (defaultName.isEmpty) {
-      _showErrorSnackBar('Önce haritadan veya aramadan bir hedef seçin.');
+      _showErrorSnackBar(l10n.mapNoDestinationSelected);
       return;
     }
     final controller = TextEditingController(text: defaultName);
     final String? name = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Favorilere Ekle'),
+        title: Text(l10n.mapAddFavoriteDialogTitle),
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'Örn: Ev, İş'),
+          decoration: InputDecoration(hintText: l10n.mapAddFavoriteHint),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(l10n.commonCancel),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Kaydet'),
+            child: Text(l10n.commonSave),
           ),
         ],
       ),
     );
     if (name == null || name.isEmpty) return;
-    await HiveService.addFavorite(FavoriteDestination(name: name, lat: _selectedLat, lng: _selectedLng));
+    await HiveService.addFavorite(
+      FavoriteDestination(name: name, lat: _selectedLat, lng: _selectedLng),
+    );
     await _loadFavorites();
-    if (mounted) _showSuccessSnackBar('"$name" favorilere eklendi.');
+    if (mounted) _showSuccessSnackBar(l10n.mapAddedToFavorites(name));
   }
 
   @override
@@ -279,23 +331,101 @@ class _MapPageState extends State<MapPage> {
     try {
       final lastPos = await geo.Geolocator.getLastKnownPosition();
       if (lastPos != null) {
-        final dist = DistanceCalculator.calculateDistance(lastPos.latitude, lastPos.longitude, destLat, destLng);
-        if (mounted) setState(() { _previewDistanceMeters = dist; });
+        final dist = DistanceCalculator.calculateDistance(
+          lastPos.latitude,
+          lastPos.longitude,
+          destLat,
+          destLng,
+        );
+        if (mounted)
+          setState(() {
+            _previewDistanceMeters = dist;
+          });
       }
     } catch (_) {}
 
     try {
       final position = await geo.Geolocator.getCurrentPosition(
-        locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.high, timeLimit: Duration(seconds: 5)),
+        locationSettings: const geo.LocationSettings(
+          accuracy: geo.LocationAccuracy.high,
+          timeLimit: Duration(seconds: 5),
+        ),
       );
-      final double distanceM = DistanceCalculator.calculateDistance(position.latitude, position.longitude, destLat, destLng);
-      if (mounted) setState(() { _previewDistanceMeters = distanceM; _isCalculatingDistance = false; });
+      final double distanceM = DistanceCalculator.calculateDistance(
+        position.latitude,
+        position.longitude,
+        destLat,
+        destLng,
+      );
+      if (mounted)
+        setState(() {
+          _previewDistanceMeters = distanceM;
+          _isCalculatingDistance = false;
+        });
+      // Bilgilendirici yol mesafesi — sonucu beklemeden devam edilir.
+      _fetchRouteDistance(
+        position.latitude,
+        position.longitude,
+        destLat,
+        destLng,
+      );
     } on geo.PermissionDeniedException {
-      if (mounted) setState(() { _previewDistanceMeters ??= -1; _isCalculatingDistance = false; });
+      if (mounted)
+        setState(() {
+          _previewDistanceMeters ??= -1;
+          _isCalculatingDistance = false;
+        });
     } catch (e) {
-      if (mounted) setState(() { _isCalculatingDistance = false; _previewDistanceMeters ??= -1; });
+      if (mounted)
+        setState(() {
+          _isCalculatingDistance = false;
+          _previewDistanceMeters ??= -1;
+        });
     }
   }
+
+  /// Mapbox Directions API ile gerçek (yol üzerinden) mesafe ve süreyi
+  /// çeker. Tamamen bilgilendirici bir ektir; başarısız olursa sessizce
+  /// yoksayılır ve kuş uçuşu mesafe tek başına gösterilmeye devam eder.
+  Future<void> _fetchRouteDistance(
+    double originLat,
+    double originLng,
+    double destLat,
+    double destLng,
+  ) async {
+    if (_mapboxToken.isEmpty) return;
+    setState(() {
+      _isFetchingRouteDistance = true;
+      _routeDistanceMeters = null;
+      _routeDurationSeconds = null;
+    });
+    try {
+      final uri = Uri.parse(
+        'https://api.mapbox.com/directions/v5/mapbox/driving/'
+        '$originLng,$originLat;$destLng,$destLat'
+        '?overview=false&access_token=$_mapboxToken',
+      );
+      final response = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final routes = data['routes'] as List?;
+        if (routes != null && routes.isNotEmpty) {
+          final route = routes.first as Map<String, dynamic>;
+          if (mounted) {
+            setState(() {
+              _routeDistanceMeters = (route['distance'] as num?)?.toDouble();
+              _routeDurationSeconds = (route['duration'] as num?)?.round();
+            });
+          }
+        }
+      }
+    } catch (_) {
+      // Sessizce yoksay — kritik olmayan bir ek bilgi.
+    } finally {
+      if (mounted) setState(() => _isFetchingRouteDistance = false);
+    }
+  }
+
   String _formatPreviewDistance(double? meters) {
     if (meters == null || meters < 0) return '';
     if (meters >= 1000) return '~${(meters / 1000).toStringAsFixed(1)} km';
@@ -309,7 +439,7 @@ class _MapPageState extends State<MapPage> {
   Future<void> _determinePosition() async {
     bool serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      if (mounted) _showErrorSnackBar('Konum servisi kapali.');
+      if (mounted) _showErrorSnackBar(l10n.mapLocationServiceDisabled);
       return;
     }
     geo.LocationPermission permission = await geo.Geolocator.checkPermission();
@@ -322,24 +452,46 @@ class _MapPageState extends State<MapPage> {
     try {
       final lastPosition = await geo.Geolocator.getLastKnownPosition();
       if (lastPosition != null && mounted) {
-        setState(() { _selectedLat = lastPosition.latitude; _selectedLng = lastPosition.longitude; });
-        _mapboxMap?.flyTo(CameraOptions(center: Point(coordinates: Position(_selectedLng, _selectedLat)), zoom: 15.0), MapAnimationOptions(duration: 500));
+        setState(() {
+          _selectedLat = lastPosition.latitude;
+          _selectedLng = lastPosition.longitude;
+        });
+        _mapboxMap?.flyTo(
+          CameraOptions(
+            center: Point(coordinates: Position(_selectedLng, _selectedLat)),
+            zoom: 15.0,
+          ),
+          MapAnimationOptions(duration: 500),
+        );
         _updateMarker(_selectedLat, _selectedLng);
       }
     } catch (e) {}
 
     try {
       final position = await geo.Geolocator.getCurrentPosition(
-        locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.high, timeLimit: Duration(seconds: 8)),
+        locationSettings: const geo.LocationSettings(
+          accuracy: geo.LocationAccuracy.high,
+          timeLimit: Duration(seconds: 8),
+        ),
       );
       if (position.latitude == 0.0 && position.longitude == 0.0) return;
       if (mounted) {
-        setState(() { _selectedLat = position.latitude; _selectedLng = position.longitude; });
-        _mapboxMap?.flyTo(CameraOptions(center: Point(coordinates: Position(_selectedLng, _selectedLat)), zoom: 15.0), MapAnimationOptions(duration: 800));
+        setState(() {
+          _selectedLat = position.latitude;
+          _selectedLng = position.longitude;
+        });
+        _mapboxMap?.flyTo(
+          CameraOptions(
+            center: Point(coordinates: Position(_selectedLng, _selectedLat)),
+            zoom: 15.0,
+          ),
+          MapAnimationOptions(duration: 800),
+        );
         _updateMarker(_selectedLat, _selectedLng);
       }
     } catch (e) {}
   }
+
   Future<void> _onMapCreated(MapboxMap mapboxMap) async {
     _mapboxMap = mapboxMap;
 
@@ -370,8 +522,8 @@ class _MapPageState extends State<MapPage> {
     );
 
     // PointAnnotationManager oluştur
-    _pointAnnotationManager =
-        await mapboxMap.annotations.createPointAnnotationManager();
+    _pointAnnotationManager = await mapboxMap.annotations
+        .createPointAnnotationManager();
 
     // Harita tıklama dinleyicisi (modern TapInteraction.onMap API)
     mapboxMap.addInteraction(
@@ -389,7 +541,7 @@ class _MapPageState extends State<MapPage> {
   /// Turkuaz gradyanlı bir pin marker'ı programmatik olarak çizer (asset gerektirmez).
   Future<Uint8List> _buildMarkerImage() async {
     const double size = 80.0;
-    const double r = 22.0;       // daire yarıçapı
+    const double r = 22.0; // daire yarıçapı
     const double cx = size / 2;
     const double cy = size / 2 - 8;
 
@@ -422,7 +574,8 @@ class _MapPageState extends State<MapPage> {
 
     // Beyaz kenarlık
     canvas.drawCircle(
-      const Offset(cx, cy), r,
+      const Offset(cx, cy),
+      r,
       Paint()
         ..color = Colors.white
         ..style = PaintingStyle.stroke
@@ -482,7 +635,9 @@ class _MapPageState extends State<MapPage> {
       _selectedLng = lng;
       _suggestions = [];
       _previewDistanceMeters = null; // Yeni hedef → eski mesafeyi sıfırla
-      _searchController.text = 'Konum alınıyor...';
+      _routeDistanceMeters = null;
+      _routeDurationSeconds = null;
+      _searchController.text = l10n.mapLocatingText;
     });
 
     _updateMarker(lat, lng);
@@ -516,19 +671,16 @@ class _MapPageState extends State<MapPage> {
   Future<void> _fetchSuggestions(String input, {bool isRetry = false}) async {
     final int requestTag = ++_currentRequestTag;
 
-    final Uri uri = Uri.https(
-      'api.mapbox.com',
-      '/search/searchbox/v1/suggest',
-      {
-        'q': input,
-        'access_token': _mapboxToken,
-        'session_token': _sessionToken,
-        'language': 'tr',
-        'country': 'TR',
-        'types': 'poi,address,place,neighborhood',
-        'limit': '10',
-      },
-    );
+    final Uri uri =
+        Uri.https('api.mapbox.com', '/search/searchbox/v1/suggest', {
+          'q': input,
+          'access_token': _mapboxToken,
+          'session_token': _sessionToken,
+          'language': Localizations.localeOf(context).languageCode,
+          'country': 'TR',
+          'types': 'poi,address,place,neighborhood',
+          'limit': '10',
+        });
 
     try {
       final response = await http.get(uri).timeout(_kApiTimeout);
@@ -540,14 +692,15 @@ class _MapPageState extends State<MapPage> {
         final List rawList = data['suggestions'] as List? ?? [];
 
         setState(() {
-          _suggestions =
-              rawList.whereType<Map<String, dynamic>>().toList();
+          _suggestions = rawList.whereType<Map<String, dynamic>>().toList();
         });
-        debugPrint('[MapPage] Search Box suggest: ${_suggestions.length} öneri');
+        debugPrint(
+          '[MapPage] Search Box suggest: ${_suggestions.length} öneri',
+        );
       } else {
         debugPrint('[MapPage] Search Box suggest HTTP ${response.statusCode}');
         if (requestTag == _currentRequestTag) {
-          _showErrorSnackBar('Arama servisi hatası: ${response.statusCode}');
+          _showErrorSnackBar(l10n.mapSearchServiceError(response.statusCode));
         }
       }
     } on SocketException catch (e) {
@@ -560,7 +713,7 @@ class _MapPageState extends State<MapPage> {
           await _fetchSuggestions(input, isRetry: true);
         }
       } else {
-        _showErrorSnackBar('Arama için internet bağlantısı kurulamadı.');
+        _showErrorSnackBar(l10n.mapSearchNoInternet);
       }
     } on TimeoutException {
       debugPrint('[MapPage] TimeoutException — Search Box suggest');
@@ -572,7 +725,7 @@ class _MapPageState extends State<MapPage> {
           await _fetchSuggestions(input, isRetry: true);
         }
       } else {
-        _showErrorSnackBar('Bağlantı zaman aşımına uğradı. İnternet bağlantınızı kontrol edin.');
+        _showErrorSnackBar(l10n.mapSearchTimeout);
       }
     } catch (e) {
       debugPrint('[MapPage] Suggestions Error: $e');
@@ -585,9 +738,11 @@ class _MapPageState extends State<MapPage> {
   Future<void> _selectSuggestion(Map<String, dynamic> suggestion) async {
     final String? mapboxId = suggestion['mapbox_id'] as String?;
     // Öneri metnini geçici olarak göster
-    final String displayName = suggestion['name'] as String? ??
+    final String displayName =
+        suggestion['name'] as String? ??
         suggestion['full_address'] as String? ??
-        suggestion['place_formatted'] as String? ?? '';
+        suggestion['place_formatted'] as String? ??
+        '';
 
     if (mapboxId == null || mapboxId.isEmpty) {
       debugPrint('[MapPage] mapbox_id boş — retrieve atlanamaz');
@@ -600,15 +755,14 @@ class _MapPageState extends State<MapPage> {
       _isLoading = true;
     });
 
-    debugPrint('[MapPage] Retrieve başlatılıyor: mapbox_id=$mapboxId session=$_sessionToken');
+    debugPrint(
+      '[MapPage] Retrieve başlatılıyor: mapbox_id=$mapboxId session=$_sessionToken',
+    );
 
     final Uri uri = Uri.https(
       'api.mapbox.com',
       '/search/searchbox/v1/retrieve/$mapboxId',
-      {
-        'access_token': _mapboxToken,
-        'session_token': _sessionToken,
-      },
+      {'access_token': _mapboxToken, 'session_token': _sessionToken},
     );
 
     try {
@@ -621,17 +775,16 @@ class _MapPageState extends State<MapPage> {
         final List features = data['features'] as List? ?? [];
 
         if (features.isEmpty) {
-          _showErrorSnackBar('Yer koordinatı alınamadı.');
+          _showErrorSnackBar(l10n.mapCoordinateUnavailable);
           setState(() => _isLoading = false);
           return;
         }
 
         final feature = features[0] as Map<String, dynamic>;
-        final coords =
-            feature['geometry']?['coordinates'] as List? ?? [];
+        final coords = feature['geometry']?['coordinates'] as List? ?? [];
 
         if (coords.length < 2) {
-          _showErrorSnackBar('Koordinat bilgisi eksik.');
+          _showErrorSnackBar(l10n.mapCoordinateMissing);
           setState(() => _isLoading = false);
           return;
         }
@@ -644,7 +797,8 @@ class _MapPageState extends State<MapPage> {
         // sonra ilk seçimde gösterilen displayName tercih edilir; tam adres
         // yalnızca hiçbiri yoksa (ör. düz bir sokak noktası) son çare olarak kullanılır.
         final props = feature['properties'] as Map<String, dynamic>? ?? {};
-        final String resultName = props['name'] as String? ??
+        final String resultName =
+            props['name'] as String? ??
             (displayName.isNotEmpty ? displayName : null) ??
             props['full_address'] as String? ??
             '';
@@ -655,11 +809,15 @@ class _MapPageState extends State<MapPage> {
           _searchController.text = resultName;
           _isLoading = false;
           _previewDistanceMeters = null; // Yeni hedef → eski mesafeyi sıfırla
+          _routeDistanceMeters = null;
+          _routeDurationSeconds = null;
           // Retrieve tamamlandı → yeni oturum başlat
           _sessionToken = _uuid.v4();
         });
 
-        debugPrint('[MapPage] Retrieve tamamlandı: $resultName → lat=$lat, lng=$lng');
+        debugPrint(
+          '[MapPage] Retrieve tamamlandı: $resultName → lat=$lat, lng=$lng',
+        );
         debugPrint('[MapPage] Yeni session token: $_sessionToken');
 
         _mapboxMap?.flyTo(
@@ -676,19 +834,19 @@ class _MapPageState extends State<MapPage> {
         await _updatePreviewDistance(lat, lng);
       } else {
         debugPrint('[MapPage] Retrieve HTTP ${response.statusCode}');
-        _showErrorSnackBar('Yer detayları alınamadı: ${response.statusCode}');
+        _showErrorSnackBar(l10n.mapPlaceDetailsError(response.statusCode));
         setState(() => _isLoading = false);
       }
     } on SocketException catch (e) {
       debugPrint('[MapPage] Retrieve SocketException: $e');
       if (mounted) {
-        _showErrorSnackBar('Koordinat alınamadı. İnternet bağlantısı yok.');
+        _showErrorSnackBar(l10n.mapCoordinateNoInternet);
         setState(() => _isLoading = false);
       }
     } on TimeoutException {
       debugPrint('[MapPage] Retrieve TimeoutException');
       if (mounted) {
-        _showErrorSnackBar('Koordinat alınamadı. Zaman aşımı.');
+        _showErrorSnackBar(l10n.mapCoordinateTimeout);
         setState(() => _isLoading = false);
       }
     } catch (e) {
@@ -706,14 +864,16 @@ class _MapPageState extends State<MapPage> {
 
     if (lat == 0.0 && lng == 0.0) {
       debugPrint('[MapPage] Uyarı: Null Island koordinatı seçildi!');
-      if (mounted) setState(() => _searchController.text = 'Seçilen Nokta (0,0)');
+      if (mounted) {
+        setState(() => _searchController.text = l10n.mapNullIslandPoint);
+      }
       return;
     }
 
     final String url =
         'https://api.mapbox.com/geocoding/v5/mapbox.places/$lng,$lat.json'
         '?access_token=$_mapboxToken'
-        '&language=tr'
+        '&language=${Localizations.localeOf(context).languageCode}'
         '&limit=1';
 
     try {
@@ -725,32 +885,41 @@ class _MapPageState extends State<MapPage> {
         final List features = data['features'] as List? ?? [];
 
         if (features.isNotEmpty) {
-          final address = features[0]['place_name'] as String? ??
+          final address =
+              features[0]['place_name'] as String? ??
               '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})';
           setState(() => _searchController.text = address);
           debugPrint('[MapPage] Reverse geocode sonucu: $address');
         } else {
-          setState(() =>
-              _searchController.text = '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})');
+          setState(
+            () => _searchController.text =
+                '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})',
+          );
         }
       }
     } on SocketException {
       if (mounted) {
-        setState(() =>
-            _searchController.text = '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})');
-        _showErrorSnackBar('Adres bilgisi alınamadı. İnternet bağlantısı yok.');
+        setState(
+          () => _searchController.text =
+              '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})',
+        );
+        _showErrorSnackBar(l10n.mapAddressNoInternet);
       }
     } on TimeoutException {
       if (mounted) {
-        setState(() =>
-            _searchController.text = '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})');
-        _showErrorSnackBar('Adres bilgisi zaman aşımına uğradı.');
+        setState(
+          () => _searchController.text =
+              '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})',
+        );
+        _showErrorSnackBar(l10n.mapAddressTimeout);
       }
     } catch (e) {
       debugPrint('[MapPage] Reverse Geocode Error: $e');
       if (mounted) {
-        setState(() =>
-            _searchController.text = '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})');
+        setState(
+          () => _searchController.text =
+              '(${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})',
+        );
       }
     }
   }
@@ -764,7 +933,10 @@ class _MapPageState extends State<MapPage> {
 
     final String destName = _searchController.text.isNotEmpty
         ? _searchController.text
-        : 'Hedef Koordinat: (${_selectedLat.toStringAsFixed(4)}, ${_selectedLng.toStringAsFixed(4)})';
+        : l10n.mapDefaultDestinationCoord(
+            _selectedLat.toStringAsFixed(4),
+            _selectedLng.toStringAsFixed(4),
+          );
 
     // Bildirim/izin akışı, backend'e kayıt, offline düşüş ve arka plan
     // servisini başlatma — bu ortak akış artık RouteLauncher'da; böylece
@@ -808,9 +980,7 @@ class _MapPageState extends State<MapPage> {
             key: const ValueKey('mapbox_map'),
             styleUri: MapboxStyles.DARK,
             viewport: CameraViewportState(
-              center: Point(
-                coordinates: Position(_selectedLng, _selectedLat),
-              ),
+              center: Point(coordinates: Position(_selectedLng, _selectedLat)),
               zoom: 14.0,
             ),
             onMapCreated: _onMapCreated,
@@ -822,7 +992,8 @@ class _MapPageState extends State<MapPage> {
             left: 10,
             child: Container(
               decoration: BoxDecoration(
-                color: theme.cardTheme.color?.withOpacity(0.7) ?? Colors.black54,
+                color:
+                    theme.cardTheme.color?.withOpacity(0.7) ?? Colors.black54,
                 shape: BoxShape.circle,
               ),
               child: IconButton(
@@ -838,12 +1009,17 @@ class _MapPageState extends State<MapPage> {
             right: 10,
             child: Container(
               decoration: BoxDecoration(
-                color: theme.cardTheme.color?.withOpacity(0.7) ?? Colors.black54,
+                color:
+                    theme.cardTheme.color?.withOpacity(0.7) ?? Colors.black54,
                 shape: BoxShape.circle,
               ),
               child: IconButton(
-                tooltip: 'Favori Konumlar',
-                icon: const Icon(Icons.star_rounded, size: 20, color: AppColors.neonOrange),
+                tooltip: l10n.mapFavoritesTitle,
+                icon: const Icon(
+                  Icons.star_rounded,
+                  size: 20,
+                  color: AppColors.neonOrange,
+                ),
                 onPressed: _showFavoritesSheet,
               ),
             ),
@@ -866,9 +1042,12 @@ class _MapPageState extends State<MapPage> {
                         controller: _searchController,
                         onChanged: _onSearchChanged,
                         decoration: InputDecoration(
-                          hintText: 'Hedef adını girin (örn: Kadıköy)',
+                          hintText: l10n.mapSearchHint,
                           border: InputBorder.none,
-                          icon: Icon(Icons.search, color: theme.colorScheme.primary),
+                          icon: Icon(
+                            Icons.search,
+                            color: theme.colorScheme.primary,
+                          ),
                           suffixIcon: _searchController.text.isNotEmpty
                               ? IconButton(
                                   icon: const Icon(Icons.clear, size: 20),
@@ -896,9 +1075,17 @@ class _MapPageState extends State<MapPage> {
                           itemBuilder: (context, index) {
                             final route = _frequentRoutes[index];
                             return ActionChip(
-                              avatar: const Icon(Icons.history_rounded, size: 16, color: AppColors.neonCyan),
-                              label: Text(route.name, style: const TextStyle(fontSize: 12)),
-                              backgroundColor: theme.cardTheme.color?.withOpacity(0.92),
+                              avatar: const Icon(
+                                Icons.history_rounded,
+                                size: 16,
+                                color: AppColors.neonCyan,
+                              ),
+                              label: Text(
+                                route.name,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              backgroundColor: theme.cardTheme.color
+                                  ?.withOpacity(0.92),
                               onPressed: () => _selectFavorite(route),
                             );
                           },
@@ -926,8 +1113,10 @@ class _MapPageState extends State<MapPage> {
                         shrinkWrap: true,
                         padding: EdgeInsets.zero,
                         itemCount: _suggestions.length,
-                        separatorBuilder: (context, index) =>
-                            Divider(color: Colors.white.withOpacity(0.1), height: 1),
+                        separatorBuilder: (context, index) => Divider(
+                          color: Colors.white.withOpacity(0.1),
+                          height: 1,
+                        ),
                         itemBuilder: (context, index) {
                           final suggestion = _suggestions[index];
                           // Search Box suggest yanıtı: name, place_formatted, maki (ikon tipi)
@@ -935,15 +1124,17 @@ class _MapPageState extends State<MapPage> {
                               suggestion['name'] as String? ?? '';
                           final String secondary =
                               suggestion['place_formatted'] as String? ??
-                              suggestion['full_address'] as String? ?? '';
+                              suggestion['full_address'] as String? ??
+                              '';
                           // POI türüne göre ikon seç
                           final String? featureType =
-                              (suggestion['feature_type'] as String?)?.toLowerCase();
+                              (suggestion['feature_type'] as String?)
+                                  ?.toLowerCase();
                           final IconData locationIcon = featureType == 'poi'
                               ? Icons.store_outlined
                               : featureType == 'address'
-                                  ? Icons.home_outlined
-                                  : Icons.location_on_outlined;
+                              ? Icons.home_outlined
+                              : Icons.location_on_outlined;
 
                           return ListTile(
                             leading: Icon(
@@ -953,12 +1144,16 @@ class _MapPageState extends State<MapPage> {
                             title: Text(
                               mainText,
                               style: const TextStyle(
-                                  fontWeight: FontWeight.bold, fontSize: 14),
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
                             ),
                             subtitle: Text(
                               secondary,
                               style: TextStyle(
-                                  color: AppColors.textMuted, fontSize: 12),
+                                color: AppColors.textMuted,
+                                fontSize: 12,
+                              ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -994,26 +1189,33 @@ class _MapPageState extends State<MapPage> {
                             color: AppColors.neonBlue.withOpacity(0.15),
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(Icons.location_on,
-                              color: AppColors.neonBlue, size: 24),
+                          child: const Icon(
+                            Icons.location_on,
+                            color: AppColors.neonBlue,
+                            size: 24,
+                          ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Varış Noktası',
-                                style: TextStyle(
-                                    color: AppColors.textMuted, fontSize: 12),
+                              Text(
+                                l10n.mapDestinationTitle,
+                                style: const TextStyle(
+                                  color: AppColors.textMuted,
+                                  fontSize: 12,
+                                ),
                               ),
                               const SizedBox(height: 4),
                               Text(
                                 _searchController.text.isNotEmpty
                                     ? _searchController.text
-                                    : 'Harita Üzerinde Seçilen Nokta',
+                                    : l10n.mapNoDestinationOnMap,
                                 style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 16),
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -1022,9 +1224,13 @@ class _MapPageState extends State<MapPage> {
                         ),
                         if (_searchController.text.isNotEmpty)
                           IconButton(
-                            tooltip: _isSelectionFavorite ? 'Favorilerden Kaldır' : 'Favorilere Ekle',
+                            tooltip: _isSelectionFavorite
+                                ? l10n.mapRemoveFavoriteTooltip
+                                : l10n.mapAddFavoriteTooltip,
                             icon: Icon(
-                              _isSelectionFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+                              _isSelectionFavorite
+                                  ? Icons.star_rounded
+                                  : Icons.star_border_rounded,
                               color: AppColors.neonOrange,
                             ),
                             onPressed: _toggleFavorite,
@@ -1033,74 +1239,150 @@ class _MapPageState extends State<MapPage> {
                     ),
 
                     // ── Önizleme mesafesi chip ──────────────
-                    if (_isCalculatingDistance || _previewDistanceMeters != null)
+                    if (_isCalculatingDistance ||
+                        _previewDistanceMeters != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 10),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 5),
-                              decoration: BoxDecoration(
-                                color: (_previewDistanceMeters != null &&
-                                        _previewDistanceMeters! >= 0)
-                                    ? AppColors.neonBlue.withValues(alpha: 0.12)
-                                    : AppColors.neonPink.withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: (_previewDistanceMeters != null &&
-                                          _previewDistanceMeters! >= 0)
-                                      ? AppColors.neonBlue.withValues(alpha: 0.5)
-                                      : AppColors.neonPink.withValues(alpha: 0.5),
-                                  width: 1,
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 5,
                                 ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (_isCalculatingDistance)
-                                    const SizedBox(
-                                      width: 12,
-                                      height: 12,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 1.5,
-                                        valueColor: AlwaysStoppedAnimation(
-                                            AppColors.neonBlue),
-                                      ),
-                                    )
-                                  else
-                                    Icon(
-                                      _previewDistanceMeters! >= 0
-                                          ? Icons.straighten
-                                          : Icons.warning_amber_rounded,
-                                      size: 13,
-                                      color: _previewDistanceMeters! >= 0
-                                          ? AppColors.neonBlue
-                                          : AppColors.neonPink,
-                                    ),
-                                  const SizedBox(width: 5),
-                                  Flexible(
-                                    child: Text(
-                                      _isCalculatingDistance
-                                          ? 'Mesafe hesaplanıyor...'
-                                          : _previewDistanceMeters! >= 0
-                                              ? 'Kuş uçuşu ${_formatPreviewDistance(_previewDistanceMeters)}'
-                                              : 'Mesafe alınamadı',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: _isCalculatingDistance ||
-                                                _previewDistanceMeters! >= 0
+                                decoration: BoxDecoration(
+                                  color:
+                                      (_previewDistanceMeters != null &&
+                                          _previewDistanceMeters! >= 0)
+                                      ? AppColors.neonBlue.withValues(
+                                          alpha: 0.12,
+                                        )
+                                      : AppColors.neonPink.withValues(
+                                          alpha: 0.12,
+                                        ),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color:
+                                        (_previewDistanceMeters != null &&
+                                            _previewDistanceMeters! >= 0)
+                                        ? AppColors.neonBlue.withValues(
+                                            alpha: 0.5,
+                                          )
+                                        : AppColors.neonPink.withValues(
+                                            alpha: 0.5,
+                                          ),
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (_isCalculatingDistance)
+                                      const SizedBox(
+                                        width: 12,
+                                        height: 12,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 1.5,
+                                          valueColor: AlwaysStoppedAnimation(
+                                            AppColors.neonBlue,
+                                          ),
+                                        ),
+                                      )
+                                    else
+                                      Icon(
+                                        _previewDistanceMeters! >= 0
+                                            ? Icons.straighten
+                                            : Icons.warning_amber_rounded,
+                                        size: 13,
+                                        color: _previewDistanceMeters! >= 0
                                             ? AppColors.neonBlue
                                             : AppColors.neonPink,
-                                        fontWeight: FontWeight.w600,
                                       ),
-                                      overflow: TextOverflow.ellipsis,
+                                    const SizedBox(width: 5),
+                                    Flexible(
+                                      child: Text(
+                                        _isCalculatingDistance
+                                            ? l10n.mapCalculatingDistance
+                                            : _previewDistanceMeters! >= 0
+                                            ? l10n.mapAsTheCrowFlies(_formatPreviewDistance(_previewDistanceMeters))
+                                            : l10n.mapDistanceUnavailable,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color:
+                                              _isCalculatingDistance ||
+                                                  _previewDistanceMeters! >= 0
+                                              ? AppColors.neonBlue
+                                              : AppColors.neonPink,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (_isFetchingRouteDistance ||
+                                  _routeDistanceMeters != null) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 5,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.neonCyan.withValues(
+                                      alpha: 0.12,
+                                    ),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: AppColors.neonCyan.withValues(
+                                        alpha: 0.5,
+                                      ),
                                     ),
                                   ),
-                                ],
-                              ),
-                            ),
-                          ],
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (_isFetchingRouteDistance)
+                                        const SizedBox(
+                                          width: 12,
+                                          height: 12,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 1.5,
+                                            valueColor: AlwaysStoppedAnimation(
+                                              AppColors.neonCyan,
+                                            ),
+                                          ),
+                                        )
+                                      else
+                                        const Icon(
+                                          Icons.alt_route_rounded,
+                                          size: 13,
+                                          color: AppColors.neonCyan,
+                                        ),
+                                      const SizedBox(width: 5),
+                                      Flexible(
+                                        child: Text(
+                                          _isFetchingRouteDistance
+                                              ? l10n.mapCalculatingRouteDistance
+                                              : '${l10n.mapRouteDistance(_formatPreviewDistance(_routeDistanceMeters))}'
+                                                    '${_routeDurationSeconds != null ? ' (~${(_routeDurationSeconds! / 60).round()} ${l10n.commonMinutesShort})' : ''}',
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.neonCyan,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       ),
 
@@ -1108,7 +1390,7 @@ class _MapPageState extends State<MapPage> {
                     _isLoading
                         ? const Center(child: CircularProgressIndicator())
                         : NeonButton(
-                            text: 'Konumu Onayla ve Başlat',
+                            text: l10n.mapConfirmAndStart,
                             onTap: _confirmLocation,
                           ),
                   ],
@@ -1121,5 +1403,3 @@ class _MapPageState extends State<MapPage> {
     );
   }
 }
-
-

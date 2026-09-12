@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
+import '../../../l10n/app_localizations.dart';
 import '../widgets/neon_button.dart';
 import '../widgets/grain_overlay.dart';
 import 'map_page.dart';
@@ -13,6 +14,7 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
       body: Stack(
@@ -52,7 +54,7 @@ class HomePage extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   IconButton(
-                    tooltip: 'Geçmiş Rotalar',
+                    tooltip: l10n.homeHistoryTooltip,
                     icon: const Icon(Icons.history_rounded, color: AppColors.textSecondary),
                     onPressed: () => Navigator.push(
                       context,
@@ -60,7 +62,7 @@ class HomePage extends StatelessWidget {
                     ),
                   ),
                   IconButton(
-                    tooltip: 'Alarm Eşikleri',
+                    tooltip: l10n.homeSettingsTooltip,
                     icon: const Icon(Icons.tune_rounded, color: AppColors.textSecondary),
                     onPressed: () => Navigator.push(
                       context,
@@ -112,20 +114,20 @@ class HomePage extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    'Rotanızı belirleyin, anlık takiplerinizi yapın ve yaklaştığınızdan haberdar olun.',
+                  Text(
+                    l10n.homeTagline,
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: AppColors.textSecondary,
                       fontSize: 15,
                       height: 1.65,
                     ),
                   ),
                   const Spacer(),
-                  
+
                   // Center Button
                   NeonButton(
-                    text: 'Rota Belirle',
+                    text: l10n.homeSetRoute,
                     onTap: () {
                       Navigator.push(
                         context,
@@ -146,10 +148,10 @@ class HomePage extends StatelessWidget {
                     },
                   ),
                   const SizedBox(height: 14),
-                  const Text(
-                    'Devam etmek için konum izni gereklidir',
+                  Text(
+                    l10n.homeLocationPermissionHint,
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
                   ),
                   const SizedBox(height: 20),
                 ],

@@ -14,6 +14,7 @@ import '../widgets/hold_to_confirm_button.dart';
 import '../widgets/grain_overlay.dart';
 import '../widgets/center_toast.dart';
 import 'home_page.dart';
+import '../../../l10n/app_localizations.dart';
 
 /// Susturma onaylandıktan sonra, geri alınamaz eylemler (backend'e "bir daha
 /// asla tetikleme" bildirimi, servisi durdurma) uygulanmadan önce kullanıcıya
@@ -28,6 +29,8 @@ class TrackingPage extends StatefulWidget {
 }
 
 class _TrackingPageState extends State<TrackingPage> {
+  AppLocalizations get l10n => AppLocalizations.of(context)!;
+
   String _destinationName = "Hedef";
 
   /// null: GPS'ten henüz gerçek mesafe gelmedi → UI'da "Hesaplanıyor..." gösterilir.
@@ -45,6 +48,10 @@ class _TrackingPageState extends State<TrackingPage> {
   /// `alarm` paketinden gelen, o an çalmakta olan bir alarm var mı bilgisi.
   bool _alarmIsRinging = false;
   StreamSubscription<AlarmSet>? _alarmRingingSub;
+
+  /// Arka plan servisi, GPS sinyali zayıf/kaybolmuşsa (kötü doğruluk ya da
+  /// uzun süredir hiç konum gelmemesi) bunu bildirir — ör. tünel/metro.
+  bool _gpsSignalWeak = false;
 
   /// Varış noktasına ulaşıldığında (mesafe <= 5m) true olur.
   /// Takip devam eder; yalnızca UI etiketi gösterilir.
@@ -119,7 +126,7 @@ class _TrackingPageState extends State<TrackingPage> {
 
   Future<void> _triggerSync() async {
     final routeId = await HiveService.getActiveRouteId() ?? kOfflineRouteId;
-    final name = await HiveService.getDestName() ?? "Hedef";
+    final name = await HiveService.getDestName() ?? l10n.commonDefaultDestination;
     final lat = await HiveService.getDestLatitude() ?? 0.0;
     final lng = await HiveService.getDestLongitude() ?? 0.0;
     final deviceId = await HiveService.getOrCreateDeviceId();
@@ -138,7 +145,7 @@ class _TrackingPageState extends State<TrackingPage> {
   }
 
   Future<void> _loadInitialState() async {
-    final dest = await HiveService.getDestName() ?? "Hedef";
+    final dest = await HiveService.getDestName() ?? l10n.commonDefaultDestination;
     final isMuted = await HiveService.getIsMuted();
     final lastDistance = await HiveService.getLastDistance();
     debugPrint('[TrackingPage] Hive lastDistance: $lastDistance');
@@ -196,6 +203,12 @@ class _TrackingPageState extends State<TrackingPage> {
       }
     });
 
+    service.on('gpsWarning').listen((event) {
+      if (!mounted || event == null) return;
+      final bool weak = event['weak'] as bool? ?? false;
+      setState(() => _gpsSignalWeak = weak);
+    });
+
     service.on('backendMute').listen((event) async {
       debugPrint('[TrackingPage] Servisten backendMute uyarısı alındı.');
       await HiveService.setIsMuted(true);
@@ -244,10 +257,10 @@ class _TrackingPageState extends State<TrackingPage> {
 
     CenterToast.show(
       context,
-      message: 'Alarm susturuluyor, takip birazdan sonlandırılacak...',
+      message: l10n.toastMuting,
       type: ToastType.error,
       duration: _kMuteUndoWindow,
-      actionLabel: 'GERİ AL',
+      actionLabel: l10n.commonUndo,
       onAction: _cancelPendingMute,
     );
 
@@ -262,7 +275,16 @@ class _TrackingPageState extends State<TrackingPage> {
     _muteUndoTimer = null;
     if (!mounted) return;
     setState(() => _mutePending = false);
-    _showInfoSnackBar('Susturma iptal edildi, takip devam ediyor.');
+    _showInfoSnackBar(l10n.toastMuteCancelled);
+  }
+
+  /// Çalan alarmı hemen susturur ama takibi susturmaz: arka plan servisi,
+  /// en son tetiklenen aşamayı 2 dakika sonra tekrar tetiklenebilir hale
+  /// getirir (bkz. background_service.dart `snoozeAlarm`).
+  void _snoozeAlarm() {
+    Alarm.stopAll();
+    FlutterBackgroundService().invoke('snoozeAlarm');
+    _showInfoSnackBar(l10n.toastSnoozed);
   }
 
   /// SORUN 3 DÜZELTMESİ (adım 2/2): "Geri Al" penceresi dolunca asıl (kalıcı)
@@ -302,7 +324,7 @@ class _TrackingPageState extends State<TrackingPage> {
     }
 
     if (mounted) {
-      _showInfoSnackBar("Alarm susturuldu ve geofence takibi sonlandırıldı.");
+      _showInfoSnackBar(l10n.toastMutedAndStopped);
     }
   }
 
@@ -349,7 +371,7 @@ class _TrackingPageState extends State<TrackingPage> {
   /// Mesafeyi kullanıcı dostu formatta döndürür.
   /// null → henüz GPS verisi yok.
   String _formatDistance(double? meters) {
-    if (meters == null) return 'Hesaplanıyor...';
+    if (meters == null) return l10n.trackingCalculating;
     if (meters >= 1000) {
       return '${(meters / 1000).toStringAsFixed(2)} km';
     } else {
@@ -446,7 +468,7 @@ class _TrackingPageState extends State<TrackingPage> {
                                     ),
                                   ),
                                   child: Text(
-                                    _isMuted ? 'SUSTURULDU' : 'TAKİP EDİLİYOR',
+                                    _isMuted ? l10n.trackingStatusMuted : l10n.trackingStatusActive,
                                     style: TextStyle(
                                       color: _isMuted
                                           ? AppColors.neonPink
@@ -465,61 +487,114 @@ class _TrackingPageState extends State<TrackingPage> {
                             if (_alarmIsRinging)
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 24),
-                                child: GestureDetector(
-                                  onTap: () => Alarm.stopAll(),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(16),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.neonPink.withOpacity(
-                                        0.15,
-                                      ),
-                                      borderRadius: BorderRadius.circular(16),
-                                      border: Border.all(
-                                        color: AppColors.neonPink,
-                                        width: 1.5,
-                                      ),
+                                child: Container(
+                                  padding: const EdgeInsets.all(16),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.neonPink.withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: AppColors.neonPink,
+                                      width: 1.5,
                                     ),
-                                    child: Row(
-                                      children: [
-                                        const Icon(
-                                          Icons.alarm,
-                                          color: AppColors.neonPink,
-                                          size: 26,
-                                        ),
-                                        const SizedBox(width: 12),
-                                        const Expanded(
-                                          child: Text(
-                                            'ALARM ÇALIYOR',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 15,
-                                              letterSpacing: 0.5,
-                                            ),
-                                          ),
-                                        ),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 14,
-                                            vertical: 8,
-                                          ),
-                                          decoration: BoxDecoration(
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.alarm,
                                             color: AppColors.neonPink,
-                                            borderRadius: BorderRadius.circular(
-                                              20,
+                                            size: 26,
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Text(
+                                              l10n.trackingAlarmRinging,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 15,
+                                                letterSpacing: 0.5,
+                                              ),
                                             ),
                                           ),
-                                          child: const Text(
-                                            'DURDUR',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 12,
+                                          GestureDetector(
+                                            onTap: () => Alarm.stopAll(),
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 14,
+                                                vertical: 8,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: AppColors.neonPink,
+                                                borderRadius: BorderRadius.circular(20),
+                                              ),
+                                              child: Text(
+                                                l10n.trackingStop,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
                                             ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 12),
+                                      GestureDetector(
+                                        onTap: _snoozeAlarm,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(vertical: 10),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withOpacity(0.08),
+                                            borderRadius: BorderRadius.circular(20),
+                                            border: Border.all(color: Colors.white24),
+                                          ),
+                                          child: Row(
+                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            children: [
+                                              const Icon(Icons.snooze_rounded, color: Colors.white, size: 18),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                l10n.trackingSnooze,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
-                                      ],
-                                    ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+
+                            if (_gpsSignalWeak)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 24),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.neonOrange.withOpacity(0.12),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(color: AppColors.neonOrange.withOpacity(0.5)),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.gps_off_rounded, color: AppColors.neonOrange, size: 20),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          l10n.trackingGpsWeakWarning,
+                                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12.5, height: 1.4),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ),
@@ -528,9 +603,9 @@ class _TrackingPageState extends State<TrackingPage> {
                             Center(
                               child: Column(
                                 children: [
-                                  const Text(
-                                    'KALAN MESAFE',
-                                    style: TextStyle(
+                                  Text(
+                                    l10n.trackingRemainingDistance,
+                                    style: const TextStyle(
                                       color: AppColors.textMuted,
                                       fontSize: 12,
                                       fontWeight: FontWeight.w600,
@@ -540,7 +615,7 @@ class _TrackingPageState extends State<TrackingPage> {
                                   const SizedBox(height: 10),
                                   Text(
                                     _syncFailed
-                                        ? 'Konum Alınamadı'
+                                        ? l10n.trackingLocationUnavailable
                                         : _formatDistance(_distanceMeters),
                                     style: theme.textTheme.headlineMedium
                                         ?.copyWith(
@@ -557,11 +632,11 @@ class _TrackingPageState extends State<TrackingPage> {
                                         ),
                                   ),
                                   if (_syncFailed)
-                                    const Padding(
-                                      padding: EdgeInsets.only(top: 8),
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 8),
                                       child: Text(
-                                        'Lütfen GPS veya internet bağlantınızı kontrol edin.',
-                                        style: TextStyle(
+                                        l10n.trackingCheckConnection,
+                                        style: const TextStyle(
                                           color: Colors.redAccent,
                                           fontSize: 13,
                                         ),
@@ -582,8 +657,8 @@ class _TrackingPageState extends State<TrackingPage> {
                                           ),
                                           const SizedBox(width: 6),
                                           Text(
-                                            'Varış Noktasına Ulaşıldı',
-                                            style: TextStyle(
+                                            l10n.trackingArrived,
+                                            style: const TextStyle(
                                               color: AppColors.neonCyan,
                                               fontSize: 13,
                                               fontWeight: FontWeight.w600,
@@ -670,15 +745,15 @@ class _TrackingPageState extends State<TrackingPage> {
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      const Text(
-                                        'Başlangıç',
-                                        style: TextStyle(
+                                      Text(
+                                        l10n.trackingStartLabel,
+                                        style: const TextStyle(
                                           color: AppColors.textMuted,
                                           fontSize: 12,
                                         ),
                                       ),
                                       Text(
-                                        'Hedef',
+                                        l10n.trackingDestinationLabel,
                                         style: TextStyle(
                                           color: theme.colorScheme.secondary,
                                           fontSize: 12,
@@ -716,11 +791,11 @@ class _TrackingPageState extends State<TrackingPage> {
                                           const SizedBox(width: 10),
                                           Expanded(
                                             child: Text(
-                                              'Alarmı susturmak için düğmeyi 3 saniye basılı tutmanız gerekir. '
-                                              'Onayladıktan sonra ${_kMuteUndoWindow.inSeconds} saniye içinde '
-                                              '"Geri Al" diyebilirsiniz; süre dolduğunda takip tamamen durur ve '
-                                              'tekrar otomatik başlamaz.',
-                                              style: TextStyle(
+                                              l10n.trackingMuteInstructions(
+                                                _kMuteUndoWindow.inSeconds,
+                                                l10n.commonUndo,
+                                              ),
+                                              style: const TextStyle(
                                                 color: AppColors.textSecondary,
                                                 fontSize: 12,
                                                 height: 1.5,
@@ -754,14 +829,14 @@ class _TrackingPageState extends State<TrackingPage> {
                                       width: 1,
                                     ),
                                   ),
-                                  child: const Padding(
-                                    padding: EdgeInsets.symmetric(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
                                       horizontal: 16,
                                     ),
                                     child: Text(
-                                      'Susturuluyor... Yukarıdaki bildirimden "GERİ AL" ile iptal edebilirsiniz',
+                                      l10n.trackingMutePendingBanner(l10n.commonUndo),
                                       textAlign: TextAlign.center,
-                                      style: TextStyle(
+                                      style: const TextStyle(
                                         color: Colors.white,
                                         fontWeight: FontWeight.w600,
                                         fontSize: 13,
@@ -771,8 +846,8 @@ class _TrackingPageState extends State<TrackingPage> {
                                 )
                               else
                                 HoldToConfirmButton(
-                                  text: 'Alarmı Sustur (3sn Basılı Tut)',
-                                  holdingText: 'Bırakma, Susturuluyor...',
+                                  text: l10n.trackingHoldToMute,
+                                  holdingText: l10n.trackingHolding,
                                   gradient: AppColors.neonPinkOrange,
                                   holdDuration: const Duration(seconds: 3),
                                   onConfirmed: _confirmMute,
@@ -783,7 +858,7 @@ class _TrackingPageState extends State<TrackingPage> {
                             TextButton(
                               onPressed: _stopTrackingSession,
                               child: Text(
-                                'Takibi Tamamen Sonlandır',
+                                l10n.trackingEndTracking,
                                 style: TextStyle(
                                   color: _isMuted
                                       ? theme.colorScheme.primary

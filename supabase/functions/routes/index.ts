@@ -334,6 +334,45 @@ async function muteRoute(req: Request, routeId: number): Promise<Response> {
   }, 200);
 }
 
+const STAGE_TO_NOTIFIED_COLUMN: Record<string, string> = {
+  STAGE_FAR: "notified_1km",
+  STAGE_MID: "notified_500m",
+  STAGE_NEAR: "notified_250m",
+};
+
+/// Kullanıcı mobil tarafta "Ertele"ye bastıktan [snoozeDuration] sonra
+/// çağrılır: en son tetiklenen aşamanın notified_* bayrağını sıfırlar,
+/// böylece hâlâ o mesafe aralığındaysa (ve susturulmadıysa) alarm tekrar
+/// tetiklenebilir. Daha yakın/uzak aşamaların bayrakları değişmez.
+async function snoozeRoute(req: Request, routeId: number): Promise<Response> {
+  const deviceId = getDeviceId(req);
+  if (!deviceId) {
+    return json({ error: "X-Device-Id başlığı zorunludur." }, 400);
+  }
+
+  const { route, response } = await getOwnedRoute(routeId, deviceId);
+  if (response) return response;
+
+  const body = await req.json().catch(() => ({}));
+  const stage = body.stage;
+  const column = STAGE_TO_NOTIFIED_COLUMN[stage];
+  if (!column) {
+    return json({ error: "stage alanı STAGE_FAR, STAGE_MID veya STAGE_NEAR olmalıdır." }, 400);
+  }
+
+  const { error } = await supabase
+    .from("target_route")
+    .update({ [column]: false })
+    .eq("id", route!.id);
+
+  if (error) {
+    console.error("snooze_route error", error);
+    return json({ error: "Erteleme uygulanırken beklenmeyen bir hata oluştu." }, 500);
+  }
+
+  return json({ route_id: route!.id, stage, message: "Aşama tekrar tetiklenebilir hale getirildi." }, 200);
+}
+
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   // Beklenen path'ler: /routes  /routes/:id/update-location  /routes/:id/mute
@@ -360,6 +399,9 @@ Deno.serve(async (req: Request) => {
     }
     if (action === "mute" && req.method === "POST") {
       return await muteRoute(req, routeId);
+    }
+    if (action === "snooze" && req.method === "POST") {
+      return await snoozeRoute(req, routeId);
     }
 
     return json({ error: "Bulunamadı." }, 404);

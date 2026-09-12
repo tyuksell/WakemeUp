@@ -2,13 +2,16 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'hive_service.dart';
 import 'notification_service.dart';
+import 'crash_reporter.dart';
 import '../utils/distance_calculator.dart';
 import '../utils/constants.dart';
+import '../../l10n/app_localizations.dart';
 
 @pragma('vm:entry-point')
 class MyBackgroundService {
@@ -48,6 +51,9 @@ class MyBackgroundService {
   // çalışır (bkz. _maybeEscalateByEta): hız yüksekse ilgili aşama, mesafe
   // eşiği henüz aşılmamış olsa bile erken tetiklenir.
   static double? _smoothedSpeedMps;
+
+  /// Kalıcı bildirimdeki ilerleme çubuğu için: oturumun ilk gerçek mesafesi.
+  static double? _initialDistanceForProgress;
   static const Duration _etaFar = Duration(minutes: 5);
   static const Duration _etaMid = Duration(minutes: 2);
   static const Duration _etaNear = Duration(seconds: 45);
@@ -57,17 +63,44 @@ class MyBackgroundService {
   /// sürelere yol açar.
   static const double _minSpeedForEtaMps = 1.0; // ~3.6 km/h
 
+  // ── GPS Sinyal Kalitesi Takibi ─────────────────────────────────────────
+  // Zayıf/kaybolmuş GPS sinyalini (ör. tünel/metro) kullanıcıya bildirmek için:
+  // konum doğruluğu bu değerden kötüyse VEYA bu süre boyunca hiç konum
+  // gelmediyse UI'a bir uyarı gönderilir.
+  static const double _poorAccuracyThresholdM = 100.0;
+  static const Duration _staleLocationThreshold = Duration(seconds: 25);
+  static DateTime? _lastPositionAt;
+  static bool _gpsWarningActive = false;
+  static Timer? _gpsWatchdogTimer;
+
+  // ── Alarm Erteleme (Snooze) ────────────────────────────────────────────
+  // En son hangi aşamanın tetiklendiğini tutar; "Ertele" ile bu aşamanın
+  // bildirim bayrağı [_snoozeDuration] sonra sıfırlanıp tekrar tetiklenebilir
+  // hale getirilir (bkz. onSnoozeAlarm).
+  static String? _lastFiredStage; // STAGE_FAR | STAGE_MID | STAGE_NEAR | ARRIVED
+  static const Duration _snoozeDuration = Duration(minutes: 2);
+
+  /// O an hangi dil seçiliyse (Hive'daki tercih) buna göre bir
+  /// [AppLocalizations] örneği döndürür. Bu, ana UI'dan ayrı bir Dart izolatı
+  /// olduğu için `BuildContext`/`Localizations.of` kullanılamaz — bunun
+  /// yerine üretilen `lookupAppLocalizations` doğrudan çağrılır.
+  static Future<AppLocalizations> _loadL10n() async {
+    final code = await HiveService.getLanguageCode();
+    return lookupAppLocalizations(Locale(code));
+  }
+
   static Future<void> initializeService() async {
     final service = FlutterBackgroundService();
-    
+    final l10n = await _loadL10n();
+
     await service.configure(
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
         autoStart: false,
         isForegroundMode: true,
         notificationChannelId: NotificationService.serviceChannelId,
-        initialNotificationTitle: 'Geofence Takibi',
-        initialNotificationContent: 'Konum takibi arka planda aktif.',
+        initialNotificationTitle: l10n.notifServiceInitialTitle,
+        initialNotificationContent: l10n.notifServiceInitialContent,
         foregroundServiceNotificationId: 888,
       ),
       iosConfiguration: IosConfiguration(
@@ -87,14 +120,39 @@ class MyBackgroundService {
   static void onStart(ServiceInstance service) async {
     DartPluginRegistrant.ensureInitialized();
     debugPrint('[BgService] onStart entry point.');
-    
+
+    // Bu, ana UI'dan ayrı bir Dart izolatı olduğundan .env ve Sentry'nin
+    // burada da ayrıca başlatılması gerekir (statik durum izolatlar arasında
+    // paylaşılmaz — bkz. crash_reporter.dart).
+    try {
+      await dotenv.load(fileName: '.env');
+      await CrashReporter.initBackgroundIsolate();
+    } catch (e) {
+      debugPrint('[BgService] .env/CrashReporter başlatılamadı: $e');
+    }
+
     // Initialize notifications only since it's stateless and doesn't hit database locks
     try {
       await NotificationService.init();
       debugPrint('[BgService] NotificationService initialized successfully.');
-    } catch (e) {
+    } catch (e, st) {
       debugPrint('[BgService] NotificationService init failed: $e');
+      CrashReporter.capture(e, st, hint: 'NotificationService.init failed in background isolate');
     }
+
+    // GPS sinyali belirli bir süre hiç gelmezse (ör. tünel/metroda) UI'a
+    // uyarı gönderen bekçi zamanlayıcı. Konum doğruluğu kötüyse bunu ayrıca
+    // _processPosition içinde anında bildiriyoruz.
+    _gpsWatchdogTimer?.cancel();
+    _gpsWatchdogTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!_isTracking || _isMuted) return;
+      final lastAt = _lastPositionAt;
+      final bool stale = lastAt == null || DateTime.now().difference(lastAt) > _staleLocationThreshold;
+      if (stale && !_gpsWarningActive) {
+        _gpsWarningActive = true;
+        service.invoke('gpsWarning', {'weak': true, 'reason': 'stale'});
+      }
+    });
 
     // Register all listeners synchronously so they receive events immediately
     if (service is AndroidServiceInstance) {
@@ -109,7 +167,51 @@ class MyBackgroundService {
     service.on('stopService').listen((event) async {
       debugPrint('[BgService] stopService tetiklendi.');
       _isTracking = false;
+      _gpsWatchdogTimer?.cancel();
       service.stopSelf();
+    });
+
+    // Kullanıcı "Ertele"ye bastığında: en son tetiklenen aşamanın bildirim
+    // bayrağı [_snoozeDuration] sonra sıfırlanır, böylece hâlâ o mesafe
+    // aralığındaysa (ve susturulmadıysa/varılmadıysa) alarm tekrar çalar.
+    // Sesin kendisi zaten UI tarafından (Alarm.stopAll()) anında durdurulur.
+    service.on('snoozeAlarm').listen((event) async {
+      final stage = _lastFiredStage;
+      debugPrint('[BgService] snoozeAlarm tetiklendi. stage=$stage, ${_snoozeDuration.inMinutes}dk sonra tekrar tetiklenebilir.');
+      if (stage == null) return;
+      Timer(_snoozeDuration, () async {
+        debugPrint('[BgService] Snooze süresi doldu, aşama tekrar tetiklenebilir hale getiriliyor: $stage');
+        switch (stage) {
+          case 'STAGE_FAR':
+            _notified1km = false;
+            break;
+          case 'STAGE_MID':
+            _notified500m = false;
+            break;
+          case 'STAGE_NEAR':
+            _notified250m = false;
+            break;
+          case 'ARRIVED':
+            _notifiedArrival = false;
+            break;
+        }
+        // Online modda gerçek tetikleme kararı backend'deki notified_* bayrağına
+        // göre verildiğinden, o kaydı da aynı şekilde sıfırlamamız gerekir.
+        if (_routeId != null && _routeId != kOfflineRouteId && _deviceId != null) {
+          try {
+            await http
+                .post(
+                  Uri.parse('$serverBaseUrl/routes/$_routeId/snooze'),
+                  headers: apiHeaders(_deviceId!),
+                  body: jsonEncode({'stage': stage}),
+                )
+                .timeout(const Duration(seconds: 8));
+          } catch (e, st) {
+            debugPrint('[BgService] Snooze backend isteği başarısız: $e');
+            CrashReporter.capture(e, st, hint: 'snooze backend request failed');
+          }
+        }
+      });
     });
 
     service.on('sync').listen((event) async {
@@ -162,6 +264,9 @@ class MyBackgroundService {
         _notified250m = false;
         _notifiedArrival = false; // Yeni oturumda varış bildirimi sıfırla
         _smoothedSpeedMps = null; // Yeni oturumda ETA hız ortalaması sıfırla
+        _lastFiredStage = null;
+        _initialDistanceForProgress = null; // Bildirimdeki ilerleme çubuğu için sıfırla
+        _gpsWarningActive = false;
         debugPrint('[BgService] startTracking: Hedef=$_destName, Lat=$_destLat, Lng=$_destLng');
         await _acquireAndProcess(service);
       }
@@ -278,6 +383,23 @@ class MyBackgroundService {
       debugPrint('[BgService] UYARI: Mevcut konum (0,0) — GPS sinyali yok!');
     }
 
+    // Bildirim metinleri için o an seçili dil (bkz. _loadL10n).
+    final l10n = await _loadL10n();
+    final String destinationName = _destName ?? l10n.commonDefaultDestination;
+
+    // GPS sinyal kalitesi: hem doğruluk (accuracy) kötüyse hem de bekçi
+    // zamanlayıcısının tetiklediği "uzun süredir konum yok" durumunu bu konum
+    // gelince temizlemek için kullanılır.
+    _lastPositionAt = DateTime.now();
+    final bool poorAccuracy = position.accuracy > _poorAccuracyThresholdM;
+    if (poorAccuracy && !_gpsWarningActive) {
+      _gpsWarningActive = true;
+      service.invoke('gpsWarning', {'weak': true, 'reason': 'accuracy', 'accuracy': position.accuracy});
+    } else if (!poorAccuracy && _gpsWarningActive) {
+      _gpsWarningActive = false;
+      service.invoke('gpsWarning', {'weak': false});
+    }
+
     // 1. Haversine ile kuş uçuşu mesafeyi hesapla
     final double distance = DistanceCalculator.calculateDistance(
       position.latitude,
@@ -292,7 +414,7 @@ class MyBackgroundService {
     // güncellemesinde çalışır; mesafe bazlı tetikleme (backend ya da yerel
     // fallback) ile aynı _notifiedXXX bayraklarını paylaştığı için aynı
     // aşamanın iki kez tetiklenmesi mümkün değildir.
-    _maybeEscalateByEta(distance, position.speed, _destName ?? "Hedef");
+    _maybeEscalateByEta(distance, position.speed, destinationName, l10n);
 
     // Invoke UI update — 5m veya daha az kaldıysa arrived:true ilet
     debugPrint('[BgService] UI güncelleniyor: distance=$distance');
@@ -303,11 +425,22 @@ class MyBackgroundService {
       "arrived": distance <= 5,
     });
 
-    // Kalıcı bildirimde canlı mesafeyi göster (yalnızca Android foreground service).
+    // Kalıcı bildirimde canlı mesafeyi ve ilerleme çubuğunu göster (yalnızca
+    // Android foreground service). İlerleme, oturumun ilk gerçek mesafesine
+    // göre hesaplanır — tracking_page.dart'taki ilerleme çubuğuyla aynı mantık.
+    if (distance > 0) {
+      _initialDistanceForProgress ??= distance;
+    }
+    int progressPercent = 0;
+    final initial = _initialDistanceForProgress;
+    if (initial != null && initial > 0) {
+      progressPercent = (100 * (1.0 - (distance / initial))).clamp(0, 100).round();
+    }
     if (service is AndroidServiceInstance) {
-      service.setForegroundNotificationInfo(
-        title: 'WakeMeUp — ${_destName ?? "Hedef"}',
-        content: 'Kalan mesafe: ${_formatDistanceForNotification(distance)}',
+      await NotificationService.updateTrackingProgress(
+        title: l10n.notifPersistentTitle(destinationName),
+        content: l10n.notifPersistentContent(_formatDistanceForNotification(distance)),
+        progressPercent: progressPercent,
       );
     }
 
@@ -337,16 +470,16 @@ class MyBackgroundService {
           }
 
           if (triggerAlarm) {
-            _triggerIsolateNotification(targetStage, _destName ?? "Hedef");
+            _triggerIsolateNotification(targetStage, destinationName, l10n);
           }
         } else {
-          _handleLocalGeofence(distance, _destName ?? "Hedef");
+          _handleLocalGeofence(distance, destinationName, l10n);
         }
       } catch (e) {
-        _handleLocalGeofence(distance, _destName ?? "Hedef");
+        _handleLocalGeofence(distance, destinationName, l10n);
       }
     } else {
-      _handleLocalGeofence(distance, _destName ?? "Hedef");
+      _handleLocalGeofence(distance, destinationName, l10n);
     }
   }
 
@@ -377,6 +510,7 @@ class MyBackgroundService {
     double distanceMeters,
     double? rawSpeedMps,
     String destination,
+    AppLocalizations l10n,
   ) {
     if (rawSpeedMps == null || rawSpeedMps < 0) return;
 
@@ -395,97 +529,107 @@ class MyBackgroundService {
       _notified250m = true;
       _notified500m = true;
       _notified1km = true;
+      _lastFiredStage = 'STAGE_NEAR';
       debugPrint('[BgService] ETA güvenlik ağı: ~${eta.inSeconds}sn kaldı (hız=${speed.toStringAsFixed(1)}m/s) — NEAR erken tetiklendi.');
       NotificationService.ringAlarm(
         id: 3,
-        title: 'Hedefe Ulaşılmak Üzere! (~${eta.inSeconds}sn kaldı)',
-        body: 'Hızınıza göre $destination noktasına yaklaşık ${eta.inSeconds} saniye kaldı.',
+        title: l10n.notifNearTitleEtaSeconds(eta.inSeconds),
+        body: l10n.notifNearBodyEtaSeconds(destination, eta.inSeconds),
       );
     } else if (eta <= _etaMid && !_notified500m) {
       _notified500m = true;
       _notified1km = true;
+      _lastFiredStage = 'STAGE_MID';
       debugPrint('[BgService] ETA güvenlik ağı: ~${eta.inMinutes}dk kaldı (hız=${speed.toStringAsFixed(1)}m/s) — MID erken tetiklendi.');
       NotificationService.showAlert(
         id: 2,
-        title: 'Hedefe Yaklaşıldı! (~${eta.inMinutes} dk kaldı)',
-        body: 'Hızınıza göre $destination noktasına yaklaşık ${eta.inMinutes} dakika kaldı.',
+        title: l10n.notifMidTitleEtaMinutes(eta.inMinutes),
+        body: l10n.notifMidBodyEtaMinutes(destination, eta.inMinutes),
       );
     } else if (eta <= _etaFar && !_notified1km) {
       _notified1km = true;
+      _lastFiredStage = 'STAGE_FAR';
       debugPrint('[BgService] ETA güvenlik ağı: ~${eta.inMinutes}dk kaldı (hız=${speed.toStringAsFixed(1)}m/s) — FAR erken tetiklendi.');
       NotificationService.showAlert(
         id: 1,
-        title: 'Menzile Girildi (~${eta.inMinutes} dk kaldı)',
-        body: 'Hızınıza göre $destination noktasına yaklaşık ${eta.inMinutes} dakika kaldı.',
+        title: l10n.notifFarTitleEtaMinutes(eta.inMinutes),
+        body: l10n.notifFarBodyEtaMinutes(destination, eta.inMinutes),
       );
     }
   }
 
-  static void _handleLocalGeofence(double distance, String destination) {
+  static void _handleLocalGeofence(double distance, String destination, AppLocalizations l10n) {
     // Varış noktası: 5 metre veya daha az kaldığında bir kez bildir
     if (distance <= 5 && !_notifiedArrival) {
       _notifiedArrival = true;
       _notified250m = true;
       _notified500m = true;
       _notified1km = true;
+      _lastFiredStage = 'ARRIVED';
       // SORUN 1/2 DÜZELTMESİ: Tek seferlik bildirim yerine, kullanıcı
       // durdurana kadar döngüyle çalan gerçek alarm (bkz. NotificationService.ringAlarm).
       NotificationService.ringAlarm(
         id: 4,
-        title: 'Varış Noktasına Ulaşıldı! 🎯',
-        body: '$destination hedefine ulaştınız.',
+        title: l10n.notifArrivedTitle,
+        body: l10n.notifArrivedBody(destination),
       );
     } else if (distance <= _thresholds.nearM && !_notified250m) {
       _notified250m = true;
       _notified500m = true;
       _notified1km = true;
+      _lastFiredStage = 'STAGE_NEAR';
       NotificationService.ringAlarm(
         id: 3,
-        title: 'Hedefe Ulaşılmak Üzere! (${_thresholds.nearM}m)',
-        body: '$destination noktasına ${_thresholds.nearM}m mesafe kaldı.',
+        title: l10n.notifNearTitleMeters(_thresholds.nearM),
+        body: l10n.notifNearBodyMeters(destination, _thresholds.nearM),
       );
     } else if (distance <= _thresholds.midM && !_notified500m) {
       _notified500m = true;
       _notified1km = true;
+      _lastFiredStage = 'STAGE_MID';
       NotificationService.showAlert(
         id: 2,
-        title: 'Hedefe Yaklaşıldı! (${_thresholds.midM}m)',
-        body: '$destination noktasına ${_thresholds.midM}m mesafe kaldı.',
+        title: l10n.notifMidTitleMeters(_thresholds.midM),
+        body: l10n.notifMidBodyMeters(destination, _thresholds.midM),
       );
     } else if (distance <= _thresholds.farM && !_notified1km) {
       _notified1km = true;
+      _lastFiredStage = 'STAGE_FAR';
       NotificationService.showAlert(
         id: 1,
-        title: 'Menzile Girildi (${_thresholds.farM}m)',
-        body: '$destination noktasına ${_thresholds.farM}m mesafe kaldı.',
+        title: l10n.notifFarTitleMeters(_thresholds.farM),
+        body: l10n.notifFarBodyMeters(destination, _thresholds.farM),
       );
     }
   }
 
-  static void _triggerIsolateNotification(String stage, String destination) {
+  static void _triggerIsolateNotification(String stage, String destination, AppLocalizations l10n) {
     if (stage == 'STAGE_NEAR') {
       _notified250m = true;
       _notified500m = true;
       _notified1km = true;
+      _lastFiredStage = 'STAGE_NEAR';
       NotificationService.ringAlarm(
         id: 3,
-        title: 'Hedefe Ulaşılmak Üzere! (${_thresholds.nearM}m)',
-        body: '$destination noktasına ${_thresholds.nearM}m mesafe kaldı.',
+        title: l10n.notifNearTitleMeters(_thresholds.nearM),
+        body: l10n.notifNearBodyMeters(destination, _thresholds.nearM),
       );
     } else if (stage == 'STAGE_MID') {
       _notified500m = true;
       _notified1km = true;
+      _lastFiredStage = 'STAGE_MID';
       NotificationService.showAlert(
         id: 2,
-        title: 'Hedefe Yaklaşıldı! (${_thresholds.midM}m)',
-        body: '$destination noktasına ${_thresholds.midM}m mesafe kaldı.',
+        title: l10n.notifMidTitleMeters(_thresholds.midM),
+        body: l10n.notifMidBodyMeters(destination, _thresholds.midM),
       );
     } else if (stage == 'STAGE_FAR') {
       _notified1km = true;
+      _lastFiredStage = 'STAGE_FAR';
       NotificationService.showAlert(
         id: 1,
-        title: 'Menzile Girildi (${_thresholds.farM}m)',
-        body: '$destination noktasına ${_thresholds.farM}m mesafe kaldı.',
+        title: l10n.notifFarTitleMeters(_thresholds.farM),
+        body: l10n.notifFarBodyMeters(destination, _thresholds.farM),
       );
     }
   }

@@ -5,6 +5,7 @@ import '../../../../core/services/route_launcher.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/grain_overlay.dart';
 import '../widgets/center_toast.dart';
+import '../../../l10n/app_localizations.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -14,6 +15,8 @@ class HistoryPage extends StatefulWidget {
 }
 
 class _HistoryPageState extends State<HistoryPage> {
+  AppLocalizations get l10n => AppLocalizations.of(context)!;
+
   bool _isLoading = true;
   List<RouteHistoryEntry> _entries = const [];
 
@@ -48,9 +51,9 @@ class _HistoryPageState extends State<HistoryPage> {
     if (!mounted) return;
     CenterToast.show(
       context,
-      message: '"${removed.destinationName}" geçmişten silindi.',
+      message: l10n.historyDeletedToast(removed.destinationName),
       type: ToastType.error,
-      actionLabel: 'GERİ AL',
+      actionLabel: l10n.commonUndo,
       onAction: () async {
         final restored = [..._entries];
         final insertAt = removedIndex.clamp(0, restored.length);
@@ -80,13 +83,13 @@ class _HistoryPageState extends State<HistoryPage> {
     final bool? confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Tüm Geçmişi Sil'),
-        content: const Text('Tüm rota geçmişiniz kalıcı olarak silinecek. Emin misiniz?'),
+        title: Text(l10n.historyClearAllTitle),
+        content: Text(l10n.historyClearAllContent),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('İptal')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l10n.commonCancel)),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Tümünü Sil', style: TextStyle(color: AppColors.neonPink)),
+            child: Text(l10n.historyClearAllConfirm, style: const TextStyle(color: AppColors.neonPink)),
           ),
         ],
       ),
@@ -103,13 +106,16 @@ class _HistoryPageState extends State<HistoryPage> {
         // Not: Bu durum gerçek varışta (5m) değil, "yakın" eşiğinde
         // (varsayılan 250m, kullanıcı tarafından ayarlanabilir) set edilir —
         // bu yüzden etiket "yaklaşıldı" diyor, "vardı" değil.
-        return (color: AppColors.neonCyan, label: 'Hedefe Yaklaşıldı');
+        return (color: AppColors.neonCyan, label: l10n.historyStatusApproached);
       case 'ACTIVE':
-        return (color: AppColors.neonBlue, label: 'Takip Ediliyor');
+        return (color: AppColors.neonBlue, label: l10n.historyStatusActive);
       case 'MUTED':
-        return (color: AppColors.neonPink, label: entry.isMuted ? 'Susturuldu' : 'İptal Edildi');
+        return (
+          color: AppColors.neonPink,
+          label: entry.isMuted ? l10n.historyStatusMuted : l10n.historyStatusCancelled,
+        );
       default:
-        return (color: AppColors.textGrey, label: 'Başlatılmadı');
+        return (color: AppColors.textGrey, label: l10n.historyStatusNotStarted);
     }
   }
 
@@ -122,13 +128,13 @@ class _HistoryPageState extends State<HistoryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Geçmiş Rotalar'),
+        title: Text(l10n.historyTitle),
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
           if (_entries.isNotEmpty)
             IconButton(
-              tooltip: 'Tümünü Temizle',
+              tooltip: l10n.historyClearAllTooltip,
               icon: const Icon(Icons.delete_sweep_outlined),
               onPressed: _confirmClearAll,
             ),
@@ -155,14 +161,14 @@ class _HistoryPageState extends State<HistoryPage> {
     if (_entries.isEmpty) {
       return ListView(
         padding: const EdgeInsets.all(24),
-        children: const [
-          SizedBox(height: 80),
-          Icon(Icons.history_rounded, color: AppColors.textGrey, size: 40),
-          SizedBox(height: 16),
+        children: [
+          const SizedBox(height: 80),
+          const Icon(Icons.history_rounded, color: AppColors.textGrey, size: 40),
+          const SizedBox(height: 16),
           Text(
-            'Henüz bir rota geçmişiniz yok.',
+            l10n.historyEmptyHint,
             textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.textGrey),
+            style: const TextStyle(color: AppColors.textGrey),
           ),
         ],
       );
@@ -236,14 +242,14 @@ class _HistoryPageState extends State<HistoryPage> {
                   )
                 else
                   IconButton(
-                    tooltip: 'Bu Rotayı Tekrar Başlat',
+                    tooltip: l10n.historyRestartTooltip,
                     visualDensity: VisualDensity.compact,
                     padding: EdgeInsets.zero,
                     icon: const Icon(Icons.replay_rounded, size: 20, color: AppColors.neonCyan),
                     onPressed: _launchingId == null ? () => _restartRoute(entry) : null,
                   ),
                 IconButton(
-                  tooltip: 'Sil',
+                  tooltip: l10n.historyDeleteTooltip,
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.textGrey),

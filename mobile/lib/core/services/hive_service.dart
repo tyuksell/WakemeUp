@@ -119,6 +119,10 @@ class HiveService {
   static const double defaultAlarmVolume = 1.0;
   static const bool defaultAlarmVibrate = true;
 
+  static const String keyHasSeenOnboarding = 'hasSeenOnboarding';
+  static const String keyLanguageCode = 'languageCode';
+  static const String defaultLanguageCode = 'tr';
+
   // Initialize Hive
   static Future<void> init() async {
     await Hive.initFlutter();
@@ -389,5 +393,27 @@ class HiveService {
   static Future<void> setAlarmVibrate(bool vibrate) async {
     final box = await openBox();
     await box.put(keyAlarmVibrate, vibrate);
+  }
+
+  // ── İlk Kullanım Tanıtımı ─────────────────────────────────────────
+  static Future<bool> getHasSeenOnboarding() async {
+    final box = await openBox();
+    return box.get(keyHasSeenOnboarding, defaultValue: false);
+  }
+
+  static Future<void> setHasSeenOnboarding(bool value) async {
+    final box = await openBox();
+    await box.put(keyHasSeenOnboarding, value);
+  }
+
+  // ── Dil Tercihi ───────────────────────────────────────────────────
+  static Future<String> getLanguageCode() async {
+    final box = await openBox();
+    return box.get(keyLanguageCode, defaultValue: defaultLanguageCode);
+  }
+
+  static Future<void> setLanguageCode(String code) async {
+    final box = await openBox();
+    await box.put(keyLanguageCode, code);
   }
 }

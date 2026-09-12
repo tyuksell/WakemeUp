@@ -178,4 +178,41 @@ class NotificationService {
   static Future<void> cancelNotification(int id) async {
     await _notificationsPlugin.cancel(id: id);
   }
+
+  /// `flutter_background_service`'in Android foreground bildirimi
+  /// ([MyBackgroundService.initializeService]'daki `foregroundServiceNotificationId`
+  /// ile aynı id — 888), bu plugin ile aynı id üzerinden yeniden `show`
+  /// edilerek zengin içerik (canlı ilerleme çubuğu) kazanır. Foreground
+  /// servis kısıtlaması için gereken bildirim aynı kalır, sadece görünümü
+  /// zenginleşir.
+  static const int trackingNotificationId = 888;
+
+  static Future<void> updateTrackingProgress({
+    required String title,
+    required String content,
+    required int progressPercent,
+  }) async {
+    final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      serviceChannelId,
+      serviceChannelName,
+      channelDescription: 'Silent persistent notification for background location tracking',
+      importance: Importance.low,
+      priority: Priority.low,
+      playSound: false,
+      enableVibration: false,
+      ongoing: true,
+      autoCancel: false,
+      showProgress: true,
+      maxProgress: 100,
+      progress: progressPercent.clamp(0, 100),
+      onlyAlertOnce: true,
+    );
+
+    await _notificationsPlugin.show(
+      id: trackingNotificationId,
+      title: title,
+      body: content,
+      notificationDetails: NotificationDetails(android: androidDetails),
+    );
+  }
 }

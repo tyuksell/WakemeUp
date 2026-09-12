@@ -89,6 +89,9 @@ Mobil uygulamayı çalıştırmadan önce Mapbox erişim anahtarınızı ayarlam
 1. `mobile/` dizininde bir `.env` dosyası oluşturun (veya mevcut olanı güncelleyin):
    ```env
    MAPBOX_ACCESS_TOKEN=your_mapbox_public_access_token_here
+   # Opsiyonel — tanımlanırsa Sentry ile crash/hata raporlama etkinleşir.
+   # Tanımlanmazsa CrashReporter tüm çağrılarda sessizce no-op olur.
+   SENTRY_DSN=
    ```
 2. `mobile/lib/core/services/background_service.dart` içindeki `serverBaseUrl` ve
    `supabaseApiKey` sabitlerini kendi Supabase projenizin değerleriyle güncelleyin.
@@ -170,6 +173,18 @@ başlıkları da gönderilmelidir. Başlık eksikse `400`, rota başka bir cihaz
     "is_muted": true,
     "message": "Rota takibi susturuldu. Gelecek alarm tetiklemeleri tamamen kapatıldı."
   }
+  ```
+
+### 5. Alarmı Erteleme (Snooze)
+* **URL:** `/functions/v1/routes/<route_id>/snooze`
+* **Metot:** `POST`
+* **İstek Gövdesi (JSON):** `stage`, `STAGE_FAR` / `STAGE_MID` / `STAGE_NEAR` değerlerinden biri olmalıdır — mobil istemci, kullanıcı "Ertele"ye bastıktan 2 dakika sonra en son tetiklenen aşamayı belirtir.
+  ```json
+  { "stage": "STAGE_NEAR" }
+  ```
+* **Yanıt Gövdesi (JSON):** İlgili aşamanın `notified_*` bayrağını sıfırlar; rota hâlâ o mesafe aralığındaysa (ve susturulmadıysa) bir sonraki konum güncellemesinde alarm tekrar tetiklenir.
+  ```json
+  { "route_id": 1, "stage": "STAGE_NEAR", "message": "Aşama tekrar tetiklenebilir hale getirildi." }
   ```
 
 ---

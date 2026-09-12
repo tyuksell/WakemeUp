@@ -14,6 +14,7 @@ import 'notification_service.dart';
 import '../utils/constants.dart';
 import '../../features/presentation/pages/tracking_page.dart';
 import '../../features/presentation/widgets/center_toast.dart';
+import '../../l10n/app_localizations.dart';
 
 /// Bir hedefe (yeni seçilmiş ya da geçmişten tekrar başlatılan) takip
 /// oturumu başlatmak için gereken tüm akışı (izinler, backend'e kayıt,
@@ -25,6 +26,8 @@ class RouteLauncher {
   RouteLauncher._();
 
   static final Uuid _uuid = const Uuid();
+
+  static AppLocalizations _l10n(BuildContext context) => AppLocalizations.of(context)!;
 
   static Future<bool> hasActualInternet() async {
     try {
@@ -87,7 +90,7 @@ class RouteLauncher {
         // Geçici ağ gecikmesi olabilir; kullanıcıya yanlışlıkla "offline devam
         // edilsin mi?" diye sormak yerine bir kez daha deniyoruz.
         if (context.mounted) {
-          CenterToast.show(context, message: 'Bağlantı zaman aşımına uğradı, tekrar deneniyor...', type: ToastType.info);
+          CenterToast.show(context, message: _l10n(context).launcherTimeoutRetrying, type: ToastType.info);
         }
         try {
           response = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 15));
@@ -114,21 +117,21 @@ class RouteLauncher {
         if (context.mounted) {
           CenterToast.show(
             context,
-            message: 'Backend sunucusu hata verdi. Durum: ${response.statusCode}',
+            message: _l10n(context).launcherServerError(response.statusCode),
             type: ToastType.error,
           );
         }
         if (context.mounted) {
           await _confirmOfflineFallback(
-              context, destName, lat, lng, 'Sunucuya bağlanılamadı, offline devam edilsin mi?');
+              context, destName, lat, lng, _l10n(context).launcherCannotConnect);
         }
       } else if (context.mounted) {
         await _confirmOfflineFallback(
-            context, destName, lat, lng, 'İşlem sırasında bir hata oluştu. Offline devam edilsin mi?');
+            context, destName, lat, lng, _l10n(context).launcherUnexpectedError);
       }
     } else {
       if (context.mounted) {
-        CenterToast.show(context, message: 'İnternet bulunamadı. Offline-First takip modu başlatıldı.', type: ToastType.success);
+        CenterToast.show(context, message: _l10n(context).launcherNoInternet, type: ToastType.success);
       }
       await _startOfflineTracking(context, destName, lat, lng);
     }
@@ -155,21 +158,16 @@ class RouteLauncher {
         final bool? openSettings = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('Arka Planda Takip İçin İzin Gerekli'),
-            content: const Text(
-              'WakeMeUp, ekranınız kilitliyken veya uygulama arka plandayken de '
-              'hedefe yaklaştığınızı algılayabilmek için konum iznini "Her Zaman '
-              'İzin Ver" olarak ayarlamanızı gerektirir. Aksi halde alarm yalnızca '
-              'uygulama ekranda açıkken tetiklenir.',
-            ),
+            title: Text(_l10n(context).launcherBackgroundPermTitle),
+            content: Text(_l10n(context).launcherBackgroundPermContent),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('Şimdilik Devam Et'),
+                child: Text(_l10n(context).launcherContinueForNow),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context, true),
-                child: const Text('Ayarları Aç'),
+                child: Text(_l10n(context).launcherOpenSettings),
               ),
             ],
           ),
@@ -188,20 +186,16 @@ class RouteLauncher {
         final bool? requestExemption = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('Güvenilir Arka Plan Takibi'),
-            content: const Text(
-              'Telefonunuzun pil tasarrufu ayarları, ekran kapalıyken konum '
-              'takibini durdurabilir. Alarmın güvenilir çalışması için WakeMeUp\'ı '
-              'pil optimizasyonundan muaf tutmanızı öneririz.',
-            ),
+            title: Text(_l10n(context).launcherBatteryPermTitle),
+            content: Text(_l10n(context).launcherBatteryPermContent),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('Şimdilik Geç'),
+                child: Text(_l10n(context).launcherSkipForNow),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context, true),
-                child: const Text('İzin Ver'),
+                child: Text(_l10n(context).launcherAllow),
               ),
             ],
           ),
@@ -235,14 +229,14 @@ class RouteLauncher {
     final bool? proceed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Bağlantı Sorunu'),
+        title: Text(_l10n(context).launcherConnectionIssueTitle),
         content: Text(message),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false), child: const Text('İptal')),
+              onPressed: () => Navigator.pop(context, false), child: Text(_l10n(context).commonCancel)),
           TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Offline Devam Et')),
+              child: Text(_l10n(context).launcherContinueOffline)),
         ],
       ),
     );
@@ -286,7 +280,7 @@ class RouteLauncher {
 
     // Hive'dan onaylanan hedef bilgilerini oku.
     final routeId = await HiveService.getActiveRouteId() ?? kOfflineRouteId;
-    final name = await HiveService.getDestName() ?? "Hedef";
+    final name = await HiveService.getDestName() ?? _l10n(context).commonDefaultDestination;
     final lat = await HiveService.getDestLatitude() ?? 0.0;
     final lng = await HiveService.getDestLongitude() ?? 0.0;
     final deviceId = await HiveService.getOrCreateDeviceId();
