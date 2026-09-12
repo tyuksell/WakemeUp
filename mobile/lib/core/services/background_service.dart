@@ -80,13 +80,26 @@ class MyBackgroundService {
   static String? _lastFiredStage; // STAGE_FAR | STAGE_MID | STAGE_NEAR | ARRIVED
   static const Duration _snoozeDuration = Duration(minutes: 2);
 
+  /// Bir kez okunup önbelleğe alınır — konum güncellemesi başına bir Hive
+  /// okuması (potansiyel gecikme/kilit riski) eklememek için. Okuma
+  /// başarısız olursa (ör. Hive kilidi) sessizce Türkçe'ye düşer; bildirim
+  /// dili yanlış olabilir ama takip/mesafe akışı ASLA bundan etkilenmez.
+  static AppLocalizations? _cachedL10n;
+
   /// O an hangi dil seçiliyse (Hive'daki tercih) buna göre bir
   /// [AppLocalizations] örneği döndürür. Bu, ana UI'dan ayrı bir Dart izolatı
   /// olduğu için `BuildContext`/`Localizations.of` kullanılamaz — bunun
   /// yerine üretilen `lookupAppLocalizations` doğrudan çağrılır.
   static Future<AppLocalizations> _loadL10n() async {
-    final code = await HiveService.getLanguageCode();
-    return lookupAppLocalizations(Locale(code));
+    final cached = _cachedL10n;
+    if (cached != null) return cached;
+    try {
+      final code = await HiveService.getLanguageCode();
+      return _cachedL10n = lookupAppLocalizations(Locale(code));
+    } catch (e) {
+      debugPrint('[BgService] Dil tercihi okunamadı, Türkçe kullanılıyor: $e');
+      return _cachedL10n = lookupAppLocalizations(const Locale('tr'));
+    }
   }
 
   static Future<void> initializeService() async {
@@ -267,6 +280,7 @@ class MyBackgroundService {
         _lastFiredStage = null;
         _initialDistanceForProgress = null; // Bildirimdeki ilerleme çubuğu için sıfırla
         _gpsWarningActive = false;
+        _cachedL10n = null; // Yeni oturumda dil tercihini tazele
         debugPrint('[BgService] startTracking: Hedef=$_destName, Lat=$_destLat, Lng=$_destLng');
         await _acquireAndProcess(service);
       }
@@ -383,10 +397,6 @@ class MyBackgroundService {
       debugPrint('[BgService] UYARI: Mevcut konum (0,0) — GPS sinyali yok!');
     }
 
-    // Bildirim metinleri için o an seçili dil (bkz. _loadL10n).
-    final l10n = await _loadL10n();
-    final String destinationName = _destName ?? l10n.commonDefaultDestination;
-
     // GPS sinyal kalitesi: hem doğruluk (accuracy) kötüyse hem de bekçi
     // zamanlayıcısının tetiklediği "uzun süredir konum yok" durumunu bu konum
     // gelince temizlemek için kullanılır.
@@ -410,13 +420,10 @@ class MyBackgroundService {
 
     debugPrint('[BgService] Hesaplanan mesafe: ${distance.toStringAsFixed(1)} m');
 
-    // ETA güvenlik ağı: online/offline modundan bağımsız olarak her konum
-    // güncellemesinde çalışır; mesafe bazlı tetikleme (backend ya da yerel
-    // fallback) ile aynı _notifiedXXX bayraklarını paylaştığı için aynı
-    // aşamanın iki kez tetiklenmesi mümkün değildir.
-    _maybeEscalateByEta(distance, position.speed, destinationName, l10n);
-
-    // Invoke UI update — 5m veya daha az kaldıysa arrived:true ilet
+    // Invoke UI update — 5m veya daha az kaldıysa arrived:true ilet. Bu,
+    // takip ekranının mesafeyi göstermesi için kritik olduğundan, aşağıdaki
+    // bildirim/dil yükleme adımlarından ÖNCE ve onlardan bağımsız gönderilir
+    // (biri yavaşlar/başarısız olursa bile mesafe ekranda görünmeye devam eder).
     debugPrint('[BgService] UI güncelleniyor: distance=$distance');
     service.invoke('update', {
       "latitude": position.latitude,
@@ -424,6 +431,18 @@ class MyBackgroundService {
       "distance": distance,
       "arrived": distance <= 5,
     });
+
+    // Bildirim metinleri için o an seçili dil (bkz. _loadL10n) — önbelleğe
+    // alınır ve başarısız olursa Türkçe'ye düşer, bu yüzden asla yukarıdaki
+    // kritik mesafe güncellemesini engellemez.
+    final l10n = await _loadL10n();
+    final String destinationName = _destName ?? l10n.commonDefaultDestination;
+
+    // ETA güvenlik ağı: online/offline modundan bağımsız olarak her konum
+    // güncellemesinde çalışır; mesafe bazlı tetikleme (backend ya da yerel
+    // fallback) ile aynı _notifiedXXX bayraklarını paylaştığı için aynı
+    // aşamanın iki kez tetiklenmesi mümkün değildir.
+    _maybeEscalateByEta(distance, position.speed, destinationName, l10n);
 
     // Kalıcı bildirimde canlı mesafeyi ve ilerleme çubuğunu göster (yalnızca
     // Android foreground service). İlerleme, oturumun ilk gerçek mesafesine
